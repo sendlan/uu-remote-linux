@@ -9,7 +9,7 @@ jobs:
   test-macos-ssh-paste:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: python3 -m unittest discover -s contrib/macos-ssh -p 'test_*.py' -v
       - name: Test file-URL clipboard reader on a private pasteboard
         run: |
@@ -19,7 +19,7 @@ jobs:
   test:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -62,7 +62,7 @@ jobs:
   test-viewer:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install build dependencies (X11 + GTK + SDL2 + ffmpeg CLI for the viewer)
         run: |
           sudo apt-get update
@@ -76,7 +76,7 @@ jobs:
   test-wayland:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install build dependencies (X11 + Wayland + portal)
         run: |
           sudo apt-get update
@@ -108,7 +108,7 @@ jobs:
   test-inproc:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install build dependencies (X11; inproc-av vendors the NVENC headers; the VAAPI/DRI3 engines need libva/gbm/xcb-dri3 headers, libva itself is dlopen'ed at runtime)
         run: |
           sudo apt-get update
@@ -124,7 +124,7 @@ jobs:
     # build honest on a native arm64 runner instead of letting it rot between releases.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install build dependencies
         run: |
           sudo apt-get update

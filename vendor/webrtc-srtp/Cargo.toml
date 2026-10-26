@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "webrtc-srtp"
-version = "0.12.0"
+version = "0.13.0"
 authors = ["Rain Liu <yliu@webrtc.rs>"]
 description = "A pure Rust implementation of SRTP"
 homepage = "https://webrtc.rs"
@@ -57,10 +57,10 @@ version = "0.10.57"
 optional = true
 
 [dependencies.rtcp]
-version = "0.10.1"
+version = "0.11.0"
 
 [dependencies.rtp]
-version = "0.10.0"
+version = "0.11.0"
 
 [dependencies.sha1]
 version = "0.10"
@@ -73,10 +73,21 @@ version = "1"
 
 [dependencies.tokio]
 version = "1.32.0"
-features = ["full"]
+features = [
+    "fs",
+    "io-util",
+    "io-std",
+    "macros",
+    "net",
+    "parking_lot",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "time",
+]
 
 [dependencies.util]
-version = "0.8.1"
+version = "0.9.0"
 features = [
     "conn",
     "buffer",
