@@ -8,7 +8,10 @@ impl Window {
     pub fn new()->Result<Self,String>{
         let sdl=sdl2::init()?;let video=sdl.video()?;
         let window=video.window("Native viewer (experimental)",1280,720).position_centered().resizable().build().map_err(|_|"Window creation failed")?;
-        let canvas=window.into_canvas().build().map_err(|_|"Renderer creation failed")?;
+        let mut canvas=window.into_canvas().build().map_err(|_|"Renderer creation failed")?;
+        // Wayland maps a toplevel only after its first buffer; without this the window stays
+        // invisible until the first decoded frame, which a stalled stream never delivers.
+        canvas.set_draw_color(sdl2::pixels::Color::BLACK);canvas.clear();canvas.present();
         let events=sdl.event_pump()?;let clipboard=video.clipboard();
         let(clipboard_tx,clipboard_requests)=tokio::sync::mpsc::channel(16);
         Ok(Self{canvas,events,_sdl:sdl,frame:(1920,1080),focused:true,files:false,mac:false,clipboard,clipboard_dirty:true,clipboard_tx,clipboard_requests,last_frame:None})
@@ -38,11 +41,32 @@ impl Window {
     }
     pub fn poll(&mut self,input:&mut Input)->(bool,Vec<serde_json::Value>){
         let viewport=self.viewport();
-        let dirty=&mut self.clipboard_dirty;
+        let dirty=&mut self.clipboard_dirty;let mut redraw=false;
         let events=self.events.poll_iter().inspect(|event|{
             if matches!(event,Event::ClipboardUpdate{..}|Event::Window{win_event:WindowEvent::FocusGained,..}){*dirty=true;}
+            redraw|=needs_redraw(event);
         });
-        translate_actions(events,input,viewport,&mut self.focused,&mut self.files)
+        let result=translate_actions(events,input,viewport,&mut self.focused,&mut self.files);
+        // A compositor resize (tiling, maximize) leaves the surface without a buffer of the new size
+        // until the next frame; a static remote desktop sends none, so repaint the last frame now.
+        if redraw {if let Some(frame)=self.last_frame.take(){
+            log::debug!("Viewer window resized: {:?}",self.canvas.window().size());
+            if let Err(e)=self.draw(&frame){log::warn!("Viewer redraw failed: {e}");}
+            self.last_frame=Some(frame);
+        }else{self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);self.canvas.clear();self.canvas.present();}}
+        result
+    }
+    fn draw(&mut self,frame:&Frame)->Result<(),String>{
+        // Pad bars belong to the decoded canvas, not the remote picture: viewport and input use the
+        // content aspect, and only the content sub-rectangle of the texture is drawn.
+        let content=frame.content.unwrap_or((frame.width,frame.height));
+        self.frame=content;let v=self.viewport();let creator=self.canvas.texture_creator();
+        let mut texture=creator.create_texture_streaming(PixelFormatEnum::RGB24,frame.width,frame.height).map_err(|_|"Texture creation failed")?;
+        texture.update(None,&frame.rgb,frame.width as usize*3).map_err(|_|"Texture update failed")?;
+        self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);self.canvas.clear();
+        let src=super::input::content_rect((frame.width,frame.height),content)
+            .map(|(x,y,w,h)|Rect::new(x.round() as i32,y.round() as i32,w.round().max(1.) as u32,h.round().max(1.) as u32));
+        self.canvas.copy(&texture,src,Some(Rect::new(v.x.round() as i32,v.y.round() as i32,v.width.round().max(1.) as u32,v.height.round().max(1.) as u32)))?;self.canvas.present();Ok(())
     }
 }
 fn clipboard_text(bytes:&[u8])->Option<String>{
@@ -91,20 +115,14 @@ fn translate_actions(events:impl IntoIterator<Item=Event>,input:&mut Input,viewp
         } (quit,messages)
 }
 
+fn needs_redraw(event:&Event)->bool{
+    matches!(event,Event::Window{win_event:WindowEvent::SizeChanged(..)|WindowEvent::Resized(..)|WindowEvent::Exposed|WindowEvent::Maximized|WindowEvent::Restored,..})
+}
 fn button(b:MouseButton)->Option<i32>{match b{MouseButton::Left=>Some(1),MouseButton::Right=>Some(2),MouseButton::Middle=>Some(4),_=>None}}
 impl FrameSink for Window {
     fn present(&mut self,frame:&Frame)->Result<(),String>{
         self.last_frame=Some(Frame{width:frame.width,height:frame.height,rgb:frame.rgb.clone(),content:frame.content});
-        // Pad bars belong to the decoded canvas, not the remote picture: viewport and input use the
-        // content aspect, and only the content sub-rectangle of the texture is drawn.
-        let content=frame.content.unwrap_or((frame.width,frame.height));
-        self.frame=content;let v=self.viewport();let creator=self.canvas.texture_creator();
-        let mut texture=creator.create_texture_streaming(PixelFormatEnum::RGB24,frame.width,frame.height).map_err(|_|"Texture creation failed")?;
-        texture.update(None,&frame.rgb,frame.width as usize*3).map_err(|_|"Texture update failed")?;
-        self.canvas.set_draw_color(sdl2::pixels::Color::BLACK);self.canvas.clear();
-        let src=super::input::content_rect((frame.width,frame.height),content)
-            .map(|(x,y,w,h)|Rect::new(x.round() as i32,y.round() as i32,w.round().max(1.) as u32,h.round().max(1.) as u32));
-        self.canvas.copy(&texture,src,Some(Rect::new(v.x.round() as i32,v.y.round() as i32,v.width.round().max(1.) as u32,v.height.round().max(1.) as u32)))?;self.canvas.present();Ok(())
+        self.draw(frame)
     }
 }
 pub async fn run(session:&mut Session,window:&mut Window,decoder:&mut dyn super::desktop::Decoder,view_only:bool,device:&str)->Result<(),String>{
@@ -441,6 +459,11 @@ async fn pump_type_job(job: &mut TypeJob, session: &mut Session, window: &mut Wi
             assert!(files);assert!(out.iter().all(|v|v["action"]=="kbd_release"));
             assert!(input.release_all().is_empty());
         }
+    }
+    #[test] fn compositor_resize_and_expose_repaint_the_last_frame(){
+        let w=|win_event|Event::Window{timestamp:0,window_id:1,win_event};
+        for e in [WindowEvent::SizeChanged(1280,800),WindowEvent::Resized(1280,800),WindowEvent::Exposed,WindowEvent::Maximized,WindowEvent::Restored]{assert!(needs_redraw(&w(e)));}
+        for e in [WindowEvent::FocusGained,WindowEvent::Moved(0,0)]{assert!(!needs_redraw(&w(e)));}
     }
     #[test] fn wheel_events_become_scroll_messages(){
         use sdl2::mouse::MouseWheelDirection;

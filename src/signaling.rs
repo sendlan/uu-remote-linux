@@ -14,6 +14,9 @@ use tokio_tungstenite::tungstenite::Message;
 /// A peer that stops reading must not park the heartbeat loop on a full queue.
 /// Kept below the Engine.IO window so the protocol deadline still fires.
 const SEND_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+// DNS/TCP/TLS/WebSocket upgrade must finish in bounded time: after a network
+// change the handshake can stall forever and the reconnect loop never retries.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often the watchdog checks the last inbound frame.
 const WATCHDOG_TICK: Duration = Duration::from_secs(1);
 
@@ -178,6 +181,21 @@ mod refresh_tests {
         assert!(closed.is_ok(),"a blocked consumer must not keep a dead signaling socket open");
     }
     #[tokio::test]
+    async fn stalled_handshake_times_out() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        // Accepts TCP but never answers the upgrade, like a stalled path after a network change.
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_tcp,_)=listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        let req=format!("ws://{address}/socket.io/").into_client_request().unwrap();
+        let result=tokio::time::timeout(std::time::Duration::from_secs(5),super::open_socket(req,std::time::Duration::from_secs(1))).await;
+        assert!(matches!(result,Ok(Err(_))),"a stalled handshake must fail within the connect timeout");
+    }
+
+    #[tokio::test]
     async fn stalled_event_delivery_still_reports_disconnected() {
         use futures_util::{SinkExt,StreamExt};
         use tokio_tungstenite::tungstenite::Message;
@@ -210,6 +228,19 @@ mod refresh_tests {
     }
 }
 
+async fn open_socket(
+    req: tokio_tungstenite::tungstenite::handshake::client::Request,
+    limit: Duration,
+) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
+    match tokio::time::timeout(limit, connect_async(req)).await {
+        Ok(result) => result.map(|(ws, _)| ws).map_err(|e| format!("WS connect failed: {}", e)),
+        Err(_) => {
+            log::warn!("Signaling connect timed out after {}s", limit.as_secs());
+            Err("WS connect timed out".into())
+        }
+    }
+}
+
 impl SignalingClient {
     pub async fn connect(
         url: &str,
@@ -231,9 +262,7 @@ impl SignalingClient {
             room_token.parse().map_err(|_| "Invalid token header")?,
         );
 
-        let (ws_stream, _) = connect_async(req)
-            .await
-            .map_err(|e| format!("WS connect failed: {}", e))?;
+        let ws_stream = open_socket(req, CONNECT_TIMEOUT).await?;
 
         log::info!("Connected to Engine.IO / Socket.IO");
         let (mut write, mut read) = ws_stream.split();
