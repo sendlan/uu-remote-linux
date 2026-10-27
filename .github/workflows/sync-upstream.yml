@@ -1,0 +1,148 @@
+name: Sync upstream
+
+# 每天跟踪上游（VallierDev/uu-remote-linux）最新 release：
+# 有新版本时 merge 进 main、bump 版本号、生成 release notes、
+# 打同名 tag —— tag push 会触发 Release workflow 构建四架构包。
+# 需要 repo secret: SYNC_TOKEN（有 repo contents 权限的 PAT；
+# 用 GITHUB_TOKEN 推 tag 不会触发其他 workflow）。
+
+on:
+  schedule:
+    - cron: '30 1 * * *' # UTC 01:30 = 北京时间 09:30
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: VallierDev/uu-remote-linux
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Fetch upstream tags
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream main --tags --force
+
+      - name: Detect latest upstream release
+        id: detect
+        run: |
+          UP_TAG=$(curl -sf "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name // empty')
+          echo "up_tag=$UP_TAG" >> "$GITHUB_OUTPUT"
+          # 查 fork 远端（不是本地 refs——上游 tag 已被 fetch 进本地，查本地恒命中）
+          if [ -z "$UP_TAG" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "upstream has no releases"
+          elif git ls-remote --exit-code origin "refs/tags/$UP_TAG" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "already synced: $UP_TAG"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "new upstream release: $UP_TAG"
+          fi
+
+      - name: Merge upstream release
+        id: merge
+        if: steps.detect.outputs.skip == 'false'
+        run: |
+          TAG="${{ steps.detect.outputs.up_tag }}"
+          git config user.name "upstream-sync bot"
+          git config user.email "actions@users.noreply.github.com"
+
+          # 合并前保存我们这边的 Cargo.toml（合并提交的 parent = 我们的 main）
+          git show HEAD:Cargo.toml > /tmp/ours-cargo.toml
+
+          if ! git merge --no-edit "$TAG"; then
+            # 冲突自动处理：Cargo.* 与 docs/release-notes/*.md 取上游，
+            # 我们独有的 patch 段与依赖行由下一步对账找回
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            echo "conflicted files: $CONFLICTS"
+            BAD=$(echo "$CONFLICTS" | grep -vE '^(Cargo\.toml|Cargo\.lock|docs/release-notes/v[0-9]+\.[0-9]+\.[0-9]+\.md)$' || true)
+            if [ -n "$BAD" ]; then
+              echo "::error::merge conflict beyond auto-resolvable files — manual resolution needed: $BAD"
+              git merge --abort
+              exit 1
+            fi
+            for f in $CONFLICTS; do git checkout --theirs -- "$f"; done
+            git add Cargo.toml Cargo.lock docs/release-notes/ 2>/dev/null || git add -A
+            git -c core.editor=true merge --continue
+          fi
+          echo "merged $TAG"
+
+      - name: Reconcile Cargo manifest and lockfile
+        if: steps.detect.outputs.skip == 'false'
+        run: |
+          TAG="${{ steps.detect.outputs.up_tag }}"
+          VER="${TAG#v}"
+          python3 - "$VER" <<'EOF'
+          import re, sys
+          ver = sys.argv[1]
+          cur = open('Cargo.toml').read()
+          ours = open('/tmp/ours-cargo.toml').read()
+
+          # 1) 版本号取上游新版本
+          cur = re.sub(r'^version = ".*"$', f'version = "{ver}"', cur, count=1, flags=re.M)
+
+          # 2) [patch.crates-io] 整段恢复我们这边的（vendor 补丁集是我们的 LoongArch 根基）
+          mo = re.search(r'^\[patch\.crates-io\]$.*', ours, re.M | re.S)
+          mc = re.search(r'^\[patch\.crates-io\]$.*', cur, re.M | re.S)
+          if mo and mc:
+              cur = cur[:mc.start()] + mo.group(0)
+
+          # 3) 被 patch 的 crate，其顶层依赖行版本要求以我们为准
+          #    （如 webrtc = "0.11" 配 vendor/webrtc 0.11.0；上游可能还停在 0.10）
+          if mo:
+              patched = set(re.findall(r'^(\S+)\s*=\s*\{\s*path', mo.group(0), re.M))
+              for name in patched:
+                  pat = re.compile(rf'^{re.escape(name)}\s*=\s*(.+)$', re.M)
+                  o, c = pat.search(ours), pat.search(cur)
+                  if o and c and o.group(1) != c.group(1):
+                      cur = cur[:c.start()] + f'{name} = {o.group(1)}' + cur[c.end():]
+                      print(f"kept ours: {name} = {o.group(1)}")
+          open('Cargo.toml', 'w').write(cur)
+          EOF
+
+          # 4) 依据对账后的 Cargo.toml 最小化重新生成 Cargo.lock，并验证一致性
+          #    （runner 预装 cargo；万一没有则现场装最小工具链）
+          cargo --version || { curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; }
+          cargo metadata --format-version 1 > /dev/null
+          cargo metadata --locked --format-version 1 > /dev/null \
+            || { echo "::error::Cargo.lock failed --locked verification"; exit 1; }
+
+          git add Cargo.toml Cargo.lock
+          git diff --cached --quiet || git commit --amend --no-edit
+
+      - name: Generate release notes
+        if: steps.detect.outputs.skip == 'false'
+        run: |
+          TAG="${{ steps.detect.outputs.up_tag }}"
+          NOTES="docs/release-notes/${TAG}.md"
+          if [ ! -f "$NOTES" ]; then
+            mkdir -p docs/release-notes
+            git show "$TAG:$NOTES" > "$NOTES" 2>/dev/null || echo "Upstream release $TAG." > "$NOTES"
+          fi
+          cat docs/release-notes/loongarch-addon.md >> "$NOTES"
+          # docker 镜像归本仓库命名空间
+          sed -i "s|ghcr.io/vallierdev/|ghcr.io/${GITHUB_REPOSITORY_OWNER}/|g" "$NOTES"
+          git add "$NOTES"
+          git diff --cached --quiet || git commit --amend --no-edit
+
+      - name: Push main and tag
+        if: steps.detect.outputs.skip == 'false'
+        run: |
+          TAG="${{ steps.detect.outputs.up_tag }}"
+          git push origin main
+          # fetch upstream 时同名 tag 已在本地（指向上游提交），强制重打到我们的合并提交
+          git tag -f "$TAG"
+          git push -f origin "$TAG"
