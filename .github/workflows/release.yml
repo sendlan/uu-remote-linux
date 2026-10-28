@@ -32,10 +32,16 @@ jobs:
             libx11-dev libxext-dev libxtst-dev libxfixes-dev libglib2.0-dev libpipewire-0.3-dev libei-dev
       - uses: dtolnay/rust-toolchain@stable
       - run: UU_NO_GTK=1 cargo build --release --locked --features portal,engine-plugins --bin uuremote-server
+      # Bundle the libei runtime with the plugin: libei1 is absent from Ubuntu 22.04
+      # and older Debian, so the deb cannot declare it as a hard dependency.
+      - name: Stage bundled libei runtime
+        run: cp -L "$(dpkg -L libei1 | grep -E '/libei\.so\.1$')" target/release/libei.so.1
       - uses: actions/upload-artifact@v5
         with:
           name: libuu-portal-${{ matrix.arch }}
-          path: target/release/libuu-portal.so
+          path: |
+            target/release/libuu-portal.so
+            target/release/libei.so.1
 
   build:
     needs: portal-plugin
@@ -121,6 +127,8 @@ jobs:
             . "$HOME/.cargo/env"
             cargo build --release --locked --features wayland,portal,engine-plugins
             cargo build --release --locked --features native-viewer,viewer-sdl --bin uuremote-viewer
+            # Bundle the libei runtime next to the plugin (see portal-plugin job).
+            cp -L "$(dpkg -L libei1 | grep -E '/libei\.so\.1$')" target/release/libei.so.1
 
             test "$(dpkg --print-architecture)" = loong64
             version="${PACKAGE_VERSION#v}"
@@ -172,6 +180,7 @@ jobs:
         with:
           body_path: docs/release-notes/${{ github.ref_name }}.md
           fail_on_unmatched_files: true
+          overwrite_files: true
           files: |
             uu-remote-linux-*.tar.gz
             uu-remote-linux-*.tar.gz.sha256

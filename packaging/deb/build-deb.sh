@@ -16,6 +16,14 @@ install -Dm755 "$bin/uuremote-server" "$pkg/usr/bin/uuremote-server"
 for lib in libuu-wayland.so libuu-portal.so; do
   [ -f "$bin/$lib" ] && install -Dm644 "$bin/$lib" "$pkg/usr/lib/uu-remote-linux/$lib"
 done
+# libei.so.1 is bundled (not a Depends): it is absent from Ubuntu 22.04 and older
+# Debian, and libuu-portal.so is dlopened at runtime so shlibdeps cannot see it.
+# The ld.so.conf.d entry makes the private dir visible to the dynamic loader.
+if [ -f "$bin/libei.so.1" ]; then
+  install -Dm755 "$bin/libei.so.1" "$pkg/usr/lib/uu-remote-linux/libei.so.1"
+  install -Dm644 /dev/null "$pkg/etc/ld.so.conf.d/uu-remote-linux.conf"
+  printf '/usr/lib/uu-remote-linux\n' > "$pkg/etc/ld.so.conf.d/uu-remote-linux.conf"
+fi
 install -Dm644 "$here/uuremote-native.service" "$pkg/usr/lib/systemd/user/uuremote-native.service"
 install -Dm644 "$root/contrib/desktop/uu-remote-linux.desktop" "$pkg/usr/share/applications/uu-remote-linux.desktop"
 [ -f "$pkg/usr/bin/uuremote-viewer" ] && install -Dm644 "$root/contrib/desktop/uu-remote-linux-viewer.desktop" "$pkg/usr/share/applications/uu-remote-linux-viewer.desktop"
@@ -43,9 +51,9 @@ Version: $version
 Architecture: $arch
 Maintainer: VallierDev <24893073+VallierDev@users.noreply.github.com>
 Installed-Size: $size
-Depends: $depends, ffmpeg
+Depends: $depends, ffmpeg, libpipewire-0.3-0
 Recommends: ${recommends:+$recommends, }libwayland-client0, libxkbcommon0
-Suggests: libpipewire-0.3-0, libei1, wl-clipboard
+Suggests: wl-clipboard
 Section: net
 Priority: optional
 Homepage: https://github.com/VallierDev/uu-remote-linux
@@ -58,6 +66,8 @@ cat > "$pkg/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
 if [ "$1" = configure ]; then
+  # Register the bundled libei.so.1 (private dir via ld.so.conf.d) in the ld cache.
+  ldconfig
   cat <<'MSG'
 uu-remote-linux installed. As your desktop user (not root):
   uuremote-server login                                  # scan the QR code with the UU Remote app
@@ -67,5 +77,12 @@ MSG
 fi
 POSTINST
 chmod 755 "$pkg/DEBIAN/postinst"
+cat > "$pkg/DEBIAN/postrm" <<'POSTRM'
+#!/bin/sh
+set -e
+# Refresh the ld cache after our ld.so.conf.d entry or bundled libei went away.
+if [ "$1" = remove ] || [ "$1" = purge ]; then ldconfig; fi
+POSTRM
+chmod 755 "$pkg/DEBIAN/postrm"
 mkdir -p "$out"
 dpkg-deb --build --root-owner-group "$pkg" "$out/uu-remote-linux_${version}_${arch}.deb"
