@@ -1684,7 +1684,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.3",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -1722,7 +1722,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -2014,6 +2014,7 @@ version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
+ "log",
  "once_cell",
  "ring 0.17.14",
  "rustls-pki-types",
@@ -3057,8 +3058,6 @@ dependencies = [
 [[package]]
 name = "webrtc-ice"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d4f0ca6d4df8d1bdd34eece61b51b62540840b7a000397bcfb53a7bfcf347c8"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3066,15 +3065,19 @@ dependencies = [
  "log",
  "portable-atomic",
  "rand 0.8.8",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "stun",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "turn",
  "url",
  "uuid",
  "waitgroup",
+ "webpki-roots 0.26.11",
  "webrtc-mdns",
  "webrtc-util",
 ]

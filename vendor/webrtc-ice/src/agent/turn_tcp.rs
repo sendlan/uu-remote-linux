@@ -152,6 +152,10 @@ pub fn frame_len(header: [u8; 4]) -> Option<usize> {
 
 #[async_trait]
 impl Conn for FramedConn {
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
+    }
+
     async fn connect(&self, _: SocketAddr) -> util::Result<()> {
         Err(util::Error::Other("TURN TCP connection is already connected".into()))
     }

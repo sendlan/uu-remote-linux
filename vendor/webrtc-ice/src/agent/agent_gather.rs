@@ -773,7 +773,6 @@ impl Agent {
                         let rel_addr = local_addr.ip().to_string();
                         let rel_port = local_addr.port();
                         (loc_conn, rel_addr, rel_port)
-                    /*TODO: case url.proto == ProtoType::UDP && url.scheme == SchemeType::TURNS{*/
                     } else if url.proto == ProtoType::Tcp && super::turn_tcp::enabled() {
                         // uu-remote-linux patch: TURN over TCP/TLS, optionally via an HTTP proxy.
                         let server = tokio::net::lookup_host(turn_server_addr.as_str()).await.ok()

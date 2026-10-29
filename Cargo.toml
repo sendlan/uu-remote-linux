@@ -77,6 +77,7 @@ webrtc-srtp = { path = "vendor/webrtc-srtp" }
 webrtc-dtls = { path = "vendor/webrtc-dtls" }
 # 256 KB data-channel receive and SCTP send limits (vendor/webrtc/PATCHES.md).
 webrtc = { path = "vendor/webrtc" }
+webrtc-ice = { path = "vendor/webrtc-ice" }
 
 [[bench]]
 name = "nvenc_pipeline_bench"

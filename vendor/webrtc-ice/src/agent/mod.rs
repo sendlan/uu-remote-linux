@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -27,6 +27,7 @@ use agent_config::*;
 use agent_internal::*;
 use agent_stats::*;
 use mdns::conn::*;
+use portable_atomic::{AtomicU8, AtomicUsize};
 use stun::agent::*;
 use stun::attributes::*;
 use stun::fingerprint::*;

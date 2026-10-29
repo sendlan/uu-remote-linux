@@ -64,18 +64,25 @@ jobs:
           git show HEAD:Cargo.toml > /tmp/ours-cargo.toml
 
           if ! git merge --no-edit "$TAG"; then
-            # 冲突自动处理：Cargo.* 与 docs/release-notes/*.md 取上游，
-            # 我们独有的 patch 段与依赖行由下一步对账找回
+            # 冲突自动处理：
+            # - Cargo.* 与 docs/release-notes/*.md 取上游（我们的 patch 段由对账步找回）
+            # - vendor/webrtc-ice 取我们（webrtc-ice 0.11 + turn_tcp 移植，上游是 0.10 基座不可用）
             CONFLICTS=$(git diff --name-only --diff-filter=U)
             echo "conflicted files: $CONFLICTS"
-            BAD=$(echo "$CONFLICTS" | grep -vE '^(Cargo\.toml|Cargo\.lock|docs/release-notes/v[0-9]+\.[0-9]+\.[0-9]+\.md)$' || true)
+            OURS_VENDOR='^vendor/webrtc-ice/'
+            BAD=$(echo "$CONFLICTS" | grep -vE '^(Cargo\.toml|Cargo\.lock|docs/release-notes/v[0-9]+\.[0-9]+\.[0-9]+\.md)$' | grep -vE "$OURS_VENDOR" || true)
             if [ -n "$BAD" ]; then
               echo "::error::merge conflict beyond auto-resolvable files — manual resolution needed: $BAD"
               git merge --abort
               exit 1
             fi
-            for f in $CONFLICTS; do git checkout --theirs -- "$f"; done
-            git add Cargo.toml Cargo.lock docs/release-notes/ 2>/dev/null || git add -A
+            for f in $CONFLICTS; do
+              case "$f" in
+                vendor/webrtc-ice/*) git checkout --ours -- "$f" ;;
+                *) git checkout --theirs -- "$f" ;;
+              esac
+            done
+            git add Cargo.toml Cargo.lock docs/release-notes/ vendor/webrtc-ice 2>/dev/null || git add -A
             git -c core.editor=true merge --continue
           fi
           echo "merged $TAG"
