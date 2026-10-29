@@ -46,7 +46,7 @@ const RING_SRCS: &[(&[&str], &str)] = &[
     (&[], "crypto/poly1305/poly1305.c"),
 
     (&[LOONGARCH64], "crypto/chacha/chacha.c"),
-    (&[LOONGARCH64], "crypto/crypto.c"),
+    (&[AARCH64, ARM, X86_64, X86, LOONGARCH64], "crypto/crypto.c"),
     (&[AARCH64, ARM, X86_64, X86, LOONGARCH64], "crypto/curve25519/curve25519.c"),
     (&[AARCH64, ARM, X86_64, X86, LOONGARCH64], "crypto/fipsmodule/ec/ecp_nistz.c"),
     (&[AARCH64, ARM, X86_64, X86, LOONGARCH64], "crypto/fipsmodule/ec/ecp_nistz256.c"),
