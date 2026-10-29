@@ -1,6 +1,7 @@
 //! UU Remote Pure Native Linux Server (Rust Edition)
 //! Zero-Wine, Zero-Python, Single-Binary, 5 Native Tools Integrated
 
+mod ws_transport;
 mod engine_plugin;
 mod doctor;
 mod wol;
@@ -629,6 +630,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     virtual_audio::init();
     let _audio_cleanup=virtual_audio::Cleanup;
     log::info!("Starting uu-remote-linux host v{}...", env!("CARGO_PKG_VERSION"));
+    session_ice::configure_relay_transport();
     // Before host.pid, and before assist: a missing or failed assist session must still handle SIGUSR2.
     let _ = install_host_signals(None);
     video::warm_auto_probe();

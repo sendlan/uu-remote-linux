@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -231,14 +230,8 @@ mod refresh_tests {
 async fn open_socket(
     req: tokio_tungstenite::tungstenite::handshake::client::Request,
     limit: Duration,
-) -> Result<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, String> {
-    match tokio::time::timeout(limit, connect_async(req)).await {
-        Ok(result) => result.map(|(ws, _)| ws).map_err(|e| format!("WS connect failed: {}", e)),
-        Err(_) => {
-            log::warn!("Signaling connect timed out after {}s", limit.as_secs());
-            Err("WS connect timed out".into())
-        }
-    }
+) -> Result<crate::ws_transport::Socket, String> {
+    crate::ws_transport::connect(req, limit).await
 }
 
 impl SignalingClient {
@@ -469,6 +462,7 @@ impl SignalingClient {
                                             log::info!("Cloud peer event: generation={} event={} age_s={} pings={} last_ping_gap_s={} ice_id_present={}",generation,event_name,started.elapsed().as_secs(),pings,last_ping.elapsed().as_secs(),data.get("ice_id").is_some());
                                             let ice_id = data.get("ice_id").and_then(|v| v.as_str()).unwrap_or("");
                                             if ice_id.is_empty() {
+                                                log::info!("Cloud room leave shape: {}", crate::protocol::json_shape(data, 3));
                                                 log::warn!("Cloud room leave without peer identifier; renewing signaling (expiry cause unknown)");
                                                 if !send_event(&event_sender, SignalingEvent::Disconnected).await { break; }
                                             } else {

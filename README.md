@@ -39,7 +39,7 @@
 | 鼠标 / 键盘 | 绝对/相对移动、点击、滚轮、按键；修复了网络延迟导致的按键连发；Wayland 下可用 uinput 虚拟键鼠（不依赖键盘布局，见下文） |
 | Mac 快捷键 | **推荐**：在 Mac 远控窗口菜单里关闭「使用 macOS 快捷键」，之后和在 Mac 上一样：Cmd+C/V/A/F/X/Z 是复制、粘贴、全选、查找、剪切、撤销（终端里 Cmd+C/V 自动变成 Ctrl+Shift+C/V），Ctrl+C 在终端里始终是中断。保持开启时，客户端会把 Cmd 和 Ctrl 都当成 Ctrl 发送：终端里 Ctrl+V / Cmd+V 自动转成粘贴，Ctrl+C 是中断，复制用 Cmd+Shift+C（X11） |
 | 鼠标指针样式 | 远端指针形状实时同步（X11） |
-| 剪贴板 | 双向文本同步 |
+| 剪贴板 | 双向文本同步；Wayland 手机输入法输入通过剪贴板兜底粘贴，见下文 |
 | 画质 / 帧率 / 分辨率 | 自动、原画 20M、超清 8M、高清 2M、自定义；30/60/90/144 帧；X11 下切换分辨率会像官方 Windows 被控端一样真正修改桌面分辨率（xrandr，缺少该模式时自动添加；选「原始」或断开后恢复），`UU_DESKTOP_RESIZE=0` 改为仅由编码器缩放；Wayland 仍由编码器缩放 |
 | 声音 | 采集系统声音（PulseAudio / PipeWire），Opus 编码传到控制端 |
 | 文件传输 | 上传、下载（含文件夹）、新建文件夹、重命名、删除 |
@@ -74,6 +74,8 @@ GNOME Wayland 的 Portal/EIS 路径已在 Ubuntu 26.04、GNOME 50、单屏 4K/20
 请附上 `uuremote-server doctor` 的输出（v0.2.17 起；只含会话、后端、插件、权限、编码器等状态，不含账号、令牌或地址，可直接粘贴）和 `journalctl --user -u uuremote-native.service` 里的相关日志。
 
 Wayland 下的限制：默认采集单屏，Hyprland 可按上文启用切屏；分辨率固定；Hyprland 原生后端默认使用双缓冲流水线 shm screencopy，控制端帧率设置会同步到采集节拍和编码器，但实际帧率仍受合成器、渲染和读回速度限制（旧串行路径在 2560x1600 曾测得约 16～22 帧；流水线只在虚拟机里测量过，不代表实机保证）；portal 后端暂不支持动态分辨率；GNOME 的屏幕唤醒与锁屏恢复见下；剪贴板只在控制端的远控窗口处于前台时同步。
+
+**Wayland 手机输入法打字与剪贴板**：Wayland 下手机端输入法提交的文字（`text_input`）优先通过虚拟键盘空闲键码上屏；在 Portal（GNOME / KDE）或键码耗尽的环境下，自动通过「写系统剪贴板 + 触发 `Shift+Insert`（或 `UU_WAYLAND_PASTE_KEY=ctrl_v`）」兜底粘贴。**注意**：此兜底过程会覆盖被控端原有的剪贴板内容，且会被双向同步回传到控制端剪贴板；设置 `UU_WAYLAND_TEXT=0` 可完全关闭 Wayland 文字输入及该粘贴兜底。
 
 GNOME 缩放桌面在使用 Portal 原生键鼠时，若支持 `ConnectToEIS` 和屏幕 `mapping_id`，通过同一授权会话的 EIS 接口注入输入，按匹配的区域与实际帧尺寸分别映射横纵坐标，没有固定分辨率或缩放倍率，可避免 `NotifyPointerMotionAbsolute` 在缩放时拒绝坐标。Portal 构建需要 libei ≥ 1.1。缺少 EIS 支持时保留旧输入路径及其既有缩放限制；其他初始化错误会明确报告并触发会话恢复。EIS 连接成功后全部输入统一使用 EIS。只采集画面或使用 uinput 时不会初始化 EIS；缺少可选的逻辑尺寸也不阻断采集。键盘沿用项目现有的 Windows VK → evdev 映射。恢复时保持编码器的采集帧尺寸不变，允许缩放后的逻辑尺寸变化。GNOME 显示配置变化后，已推流的 Portal 采集若持续「暂停且无有效格式」，会在关联通知后的 200 毫秒宽限结束后提前进入现有恢复流程；正常重协商恢复会取消提前判定，连续通知不会推迟同次异常的判定。未收到相关通知时保留五秒兜底；静态画面或有效格式下的暂停不会触发恢复。Ubuntu 26.04、GNOME Wayland 单屏 3840×2160 已实测保持连接切换 200%→166.67%→200%，恢复后画面持续更新且鼠标可控制全屏；切换期间会短暂停顿、黑屏后恢复，五秒是兜底判定阈值，并非总恢复时间。提前恢复的测量结果和验证范围见 [#35](../../pull/35)。此路径仍需实机验证锁屏恢复；多屏、连接中改变分辨率及旋转/镜像变换不属于本次修复范围。 捕获设置协议仍为版本 4：对客户端上报的分辨率统一使用像素坐标、DPR 为 1；Portal 逻辑尺寸仅用于本地输入映射。
 
@@ -192,6 +194,10 @@ cargo build --release --features wayland,portal   # + GNOME/KDE Wayland
 
 用手机上的 **网易 UU 远程 App** 扫码并确认即可。登录信息只保存在本机的
 `~/.config/uuremote/config.json`（权限 0600）里。
+
+登录状态查询失败或达到 60 秒请求超时不代表二维码已过期，也不代表手机已经确认。程序保留官方客户端的刷新策略：查询出错后点击「刷新二维码」（终端按回车；无窗口且无终端时 60 秒后刷新）。二维码请求诊断只包含请求阶段、错误类别、耗时、HTTP/API 状态及最后已知扫码状态，不输出票据、URL 或响应内容；`connect` 类别本身不能确定是 DNS、TLS 还是代理问题。
+
+这个文件里还有本机的设备身份（`device_id`、`client_id`、`system_id`），重装软件和重新扫码登录都会沿用它。**不要在机器之间拷贝 `config.json`，也不要从带着家目录的快照/数据盘克隆出第二台主机**：同一身份的两个主机实例（不论在同一台还是不同机器上）会互相把对方踢出房间，日志表现为每隔几秒出现 `Cloud room leave without peer identifier` 并反复重连，控制端一连就断。克隆或拷贝出来的机器先停掉服务，删掉配置里这三个键和 `token`、`csrf`、`user_id`，再运行 `uuremote-server login` 注册为新设备。同一台机器上残留的旧实例（例如以前手动启动的 `~/.local/bin/uuremote-server`）也会这样，`uuremote-server doctor` 发现多个主机实例时会提示。
 
 ### 4. 作为用户服务常驻
 
@@ -324,7 +330,12 @@ systemctl --user restart uuremote-native.service
 | `UU_ASSIST_ALLOW=1` | 启动时就允许他人远程协助（覆盖窗口里保存的开关状态） |
 | `UU_PORT_MAPPING=0` | 关闭端口映射（对应官方被控端的开关） |
 | `UU_WOL_HELPER=1` | 实验性：让这台主机像官方 Windows 被控端一样充当「远程开机」辅助设备——登录后向网易上报本机局域网信息，收到云端唤醒请求时向同一局域网发送唤醒包（未经端到端验证） |
-| `UU_USE_PROXY=1` | 使用环境变量里的 HTTP/SOCKS 代理；默认忽略代理、直连网易服务器 |
+| `UU_USE_PROXY=1` | REST API 与 host/viewer WebSocket 信令共用环境 HTTP/HTTPS 代理策略；默认忽略代理、直连 |
+
+
+`UU_USE_PROXY=1` 仅使用当前进程已有的代理配置；`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`（及小写形式）和 `NO_PROXY` 按 reqwest 的标准规则选择，大写优先。信令拒绝选定变量中的无效/不支持的代理 URL（仅 HTTP/HTTPS；不支持 SOCKS）、带路径/查询/片段的代理 URL，以及会忽略代理的 CGI 环境；此校验比 reqwest 默默忽略坏值更严格。未配置匹配代理或命中 `NO_PROXY` 时仍正常直连，选中代理后连接失败不会改为直连。信令保留 TLS 证书校验，不跟随重定向，也不转发认证头到重定向目标。
+
+开启后主机还会经 TCP/TLS 连接云端 TURN 中继（使用 `HTTPS_PROXY`/`ALL_PROXY` 里的无认证 `http://` 代理做 CONNECT，没有代理则直连），适用于 UDP 到不了 TURN 服务器、只有 TCP/代理能出网的主机；TURN 证书按 CA 链校验，云端下发的 TURN 地址是 IP 时容忍名称不匹配（媒体本身由 DTLS-SRTP 端到端加密）。默认（不开代理）只用 UDP 中继，行为不变。**这不创建任何新的网络出口**：登录、信令和媒体仍需各自有允许使用的网络路径。连接器只返回固定错误类别/HTTP 状态；不要为诊断开启会记录 URL/认证信息的依赖库 TRACE 日志。
 
 「远程结束后自动锁屏」「静音运行」等设置保存在 `~/.config/uuremote/host_settings.json`。同一文件里的 `video_encoder`（`auto`/`cpu`/`vaapi`/`nvenc`）和 `video_codec`（`auto`/`h264`/`h265`）用 `uuremote-server set-encoder`、`uuremote-server set-codec` 写入（非法参数退出码 2）。非 `auto` 的值优先于 `UU_VIDEO_ENCODER` / `UU_VIDEO_CODEC`；`auto` 或留空则落到环境变量，再落到 auto（有 NVIDIA 时 NVENC 优先，失败再 CPU；没有 NVIDIA 时就是 CPU，不探测；codec 仍是硬件优先 H.265、CPU 用 H.264）。探测在启动时后台进行，不挡住第一路出图。成功结果缓存到进程退出，但 NVIDIA 是否存在（`/proc/driver/nvidia/version` 或 `/dev/nvidia0`）与报告不一致时，下一次桌面连接会在后台再探测一次（`warm_auto_probe`），这一路仍用缓存的编码器，直到新结果写入。NVENC 失败只缓存 10 分钟，到期后的桌面连接同样在后台再探测一次，这一路仍用当前结果。`set-encoder` 和 `set-codec` 写完后若 `host.pid` 指向正在运行的本程序，都会发 `SIGUSR2`：编码器变化时进行中的桌面流立刻换编码器（不断开，沿用本会话已协商的 codec；新编码器起不来时按进程内 → FFmpeg 进程 → CPU 回退）。手改文件后可 `kill -USR2 $(cat ~/.config/uuremote/host.pid)`。`SIGUSR2` 不重新探测。codec 偏好仍在下次建立桌面连接时生效（运行中的 host 只记日志，不重开编码）。显式 `vaapi` 请求真彩时仍用 VAAPI、编码 4:2:0，并在 CaptureSettingSync 的 field 3 回报 4:2:0。所选编码器在本机不可用时，建流回退 CPU 并记 warning。VAAPI 进入 auto 要等 #33。
 

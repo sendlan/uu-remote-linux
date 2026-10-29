@@ -1,6 +1,6 @@
 [package]
 name = "uu-remote-linux"
-version = "0.2.34"
+version = "0.2.39"
 edition = "2021"
 default-run = "uuremote-server"
 authors = ["uu-remote-linux contributors"]
@@ -59,6 +59,11 @@ ffmpeg-next = { version = "6.1", optional = true, default-features = false, feat
 x11rb = { version = "0.13", features = ["damage", "shm", "allow-unsafe-code"], optional = true }
 
 sdl2 = { version = "0.37", optional = true, features = ["use-pkgconfig"] }
+
+[dev-dependencies]
+# Synthetic loopback WSS certificates only; both crates already occur in Cargo.lock.
+rcgen = "0.11.3"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 
 [build-dependencies]
 cc = "1.0"
