@@ -51,10 +51,11 @@ fn test_extract_fingerprint() -> Result<()> {
     {
         let s = SessionDescription::default();
 
-        assert_eq!(
-            extract_fingerprint(&s).expect_err("fingerprint absence must be detected"),
-            Error::ErrSessionDescriptionNoFingerprint
-        );
+        if let Err(err) = extract_fingerprint(&s) {
+            assert_eq!(err, Error::ErrSessionDescriptionNoFingerprint);
+        } else {
+            panic!();
+        }
     }
 
     //"Invalid Fingerprint"
@@ -67,10 +68,11 @@ fn test_extract_fingerprint() -> Result<()> {
             ..Default::default()
         };
 
-        assert_eq!(
-            extract_fingerprint(&s).expect_err("invalid fingerprint text must be detected"),
-            Error::ErrSessionDescriptionInvalidFingerprint
-        );
+        if let Err(err) = extract_fingerprint(&s) {
+            assert_eq!(err, Error::ErrSessionDescriptionInvalidFingerprint);
+        } else {
+            panic!();
+        }
     }
 
     //"Conflicting Fingerprint"
@@ -90,10 +92,11 @@ fn test_extract_fingerprint() -> Result<()> {
             ..Default::default()
         };
 
-        assert_eq!(
-            extract_fingerprint(&s).expect_err("mismatching fingerprint texts must be detected"),
-            Error::ErrSessionDescriptionConflictingFingerprints
-        );
+        if let Err(err) = extract_fingerprint(&s) {
+            assert_eq!(err, Error::ErrSessionDescriptionConflictingFingerprints);
+        } else {
+            panic!();
+        }
     }
 
     Ok(())
@@ -117,12 +120,11 @@ async fn test_extract_ice_details() -> Result<()> {
             ..Default::default()
         };
 
-        assert_eq!(
-            extract_ice_details(&s)
-                .await
-                .expect_err("ICE requires password for authentication"),
-            Error::ErrSessionDescriptionMissingIcePwd
-        );
+        if let Err(err) = extract_ice_details(&s).await {
+            assert_eq!(err, Error::ErrSessionDescriptionMissingIcePwd);
+        } else {
+            panic!();
+        }
     }
 
     //"Missing ice-ufrag"
@@ -138,12 +140,11 @@ async fn test_extract_ice_details() -> Result<()> {
             ..Default::default()
         };
 
-        assert_eq!(
-            extract_ice_details(&s)
-                .await
-                .expect_err("ICE requires 'user fragment' for authentication"),
-            Error::ErrSessionDescriptionMissingIceUfrag
-        );
+        if let Err(err) = extract_ice_details(&s).await {
+            assert_eq!(err, Error::ErrSessionDescriptionMissingIceUfrag);
+        } else {
+            panic!();
+        }
     }
 
     //"ice details at session level"
@@ -215,12 +216,11 @@ async fn test_extract_ice_details() -> Result<()> {
             ..Default::default()
         };
 
-        assert_eq!(
-            extract_ice_details(&s)
-                .await
-                .expect_err("mismatching ICE ufrags must be detected"),
-            Error::ErrSessionDescriptionConflictingIceUfrag
-        );
+        if let Err(err) = extract_ice_details(&s).await {
+            assert_eq!(err, Error::ErrSessionDescriptionConflictingIceUfrag);
+        } else {
+            panic!();
+        }
     }
 
     //"Conflict pwd"
@@ -246,12 +246,11 @@ async fn test_extract_ice_details() -> Result<()> {
             ..Default::default()
         };
 
-        assert_eq!(
-            extract_ice_details(&s)
-                .await
-                .expect_err("mismatching ICE passwords must be detected"),
-            Error::ErrSessionDescriptionConflictingIcePwd
-        );
+        if let Err(err) = extract_ice_details(&s).await {
+            assert_eq!(err, Error::ErrSessionDescriptionConflictingIcePwd);
+        } else {
+            panic!();
+        }
     }
 
     Ok(())
@@ -568,7 +567,7 @@ async fn test_media_description_fingerprints() -> Result<()> {
     let api = APIBuilder::new().with_media_engine(m).build();
     let interceptor = api.interceptor_registry.build("")?;
 
-    let kp = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
+    let kp = KeyPair::generate(&rcgen::PKCS_ECDSA_P256_SHA256)?;
     let certificate = RTCCertificate::from_key_pair(kp)?;
 
     let transport = Arc::new(RTCDtlsTransport::default());

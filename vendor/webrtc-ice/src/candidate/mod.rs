@@ -15,14 +15,13 @@ pub mod candidate_server_reflexive;
 
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use candidate_base::*;
-use portable_atomic::{AtomicBool, AtomicU16, AtomicU8};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::{broadcast, Mutex};
 
 use crate::error::Result;
@@ -89,7 +88,7 @@ pub trait Candidate: fmt::Display {
 }
 
 /// Represents the type of candidate `CandidateType` enum.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum CandidateType {
     #[serde(rename = "unspecified")]
     Unspecified,
@@ -171,7 +170,7 @@ impl fmt::Display for CandidateRelatedAddress {
 }
 
 /// Represent the ICE candidate pair state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum CandidatePairState {
     #[serde(rename = "unspecified")]
     Unspecified = 0,
@@ -234,6 +233,8 @@ pub struct CandidatePair {
     pub(crate) binding_request_count: AtomicU16,
     pub(crate) state: AtomicU8, // convert it to CandidatePairState,
     pub(crate) nominated: AtomicBool,
+    /// Latest STUN binding round trip and when it was measured (local patch, see PATCHES.md).
+    pub(crate) rtt: std::sync::Mutex<Option<(std::time::Instant, std::time::Duration)>>,
 }
 
 impl Default for CandidatePair {
@@ -245,6 +246,7 @@ impl Default for CandidatePair {
             state: AtomicU8::new(CandidatePairState::Waiting as u8),
             binding_request_count: AtomicU16::new(0),
             nominated: AtomicBool::new(false),
+            rtt: std::sync::Mutex::new(None),
         }
     }
 }
@@ -297,7 +299,21 @@ impl CandidatePair {
             state: AtomicU8::new(CandidatePairState::Waiting as u8),
             binding_request_count: AtomicU16::new(0),
             nominated: AtomicBool::new(false),
+            rtt: std::sync::Mutex::new(None),
         }
+    }
+
+    pub(crate) fn record_rtt(&self, rtt: std::time::Duration) {
+        *self.rtt.lock().unwrap() = Some((std::time::Instant::now(), rtt));
+    }
+
+    pub fn current_round_trip_time(&self) -> Option<std::time::Duration> {
+        self.rtt.lock().unwrap().map(|(_, rtt)| rtt)
+    }
+
+    /// True when no round trip was measured within `max`.
+    pub(crate) fn rtt_stale(&self, max: std::time::Duration) -> bool {
+        self.rtt.lock().unwrap().map_or(true, |(at, _)| at.elapsed() > max)
     }
 
     /// RFC 5245 - 5.7.2.  Computing Pair Priority and Ordering Pairs

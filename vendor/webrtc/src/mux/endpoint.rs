@@ -70,8 +70,4 @@ impl Conn for Endpoint {
     async fn close(&self) -> Result<()> {
         self.next_conn.close().await
     }
-
-    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
-        self
-    }
 }

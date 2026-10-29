@@ -1,5 +1,6 @@
+use std::sync::atomic::AtomicU64;
+
 use bytes::Bytes;
-use portable_atomic::AtomicU64;
 use tokio::time::Duration;
 use waitgroup::WaitGroup;
 

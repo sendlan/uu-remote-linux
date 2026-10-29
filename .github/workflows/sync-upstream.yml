@@ -60,17 +60,12 @@ jobs:
           git config user.name "upstream-sync bot"
           git config user.email "actions@users.noreply.github.com"
 
-          # 合并前保存我们这边的 Cargo.toml（合并提交的 parent = 我们的 main）
-          git show HEAD:Cargo.toml > /tmp/ours-cargo.toml
-
           if ! git merge --no-edit "$TAG"; then
-            # 冲突自动处理：
-            # - Cargo.* 与 docs/release-notes/*.md 取上游（我们的 patch 段由对账步找回）
-            # - vendor/webrtc-ice 取我们（webrtc-ice 0.11 + turn_tcp 移植，上游是 0.10 基座不可用）
+            # 冲突自动处理：Cargo.*、docs/release-notes、vendor/ 一律取上游。
+            # 用 checkout <TAG> 而非 --theirs，可正确处理 modify/delete 冲突。
             CONFLICTS=$(git diff --name-only --diff-filter=U)
             echo "conflicted files: $CONFLICTS"
-            OURS_VENDOR='^vendor/webrtc-ice/'
-            BAD=$(echo "$CONFLICTS" | grep -vE '^(Cargo\.toml|Cargo\.lock|docs/release-notes/v[0-9]+\.[0-9]+\.[0-9]+\.md)$' | grep -vE "$OURS_VENDOR" || true)
+            BAD=$(echo "$CONFLICTS" | grep -vE '^(Cargo\.toml|Cargo\.lock|docs/release-notes/|vendor/)' || true)
             if [ -n "$BAD" ]; then
               echo "::error::merge conflict beyond auto-resolvable files — manual resolution needed: $BAD"
               git merge --abort
@@ -78,50 +73,58 @@ jobs:
             fi
             for f in $CONFLICTS; do
               case "$f" in
-                vendor/webrtc-ice/*) git checkout --ours -- "$f" ;;
-                *) git checkout --theirs -- "$f" ;;
+                vendor/*)
+                  if git cat-file -e "$TAG:$f" 2>/dev/null; then
+                    git checkout "$TAG" -- "$f"
+                  else
+                    git rm -q -- "$f"
+                  fi ;;
+                *) git checkout "$TAG" -- "$f" ;;
               esac
             done
-            git add Cargo.toml Cargo.lock docs/release-notes/ vendor/webrtc-ice 2>/dev/null || git add -A
+            git add -A
             git -c core.editor=true merge --continue
           fi
+
+          # vendor 目录无条件强制对齐上游（防跨基座文本自动合并出缝合树）。
+          # vendor/nix-0.26 与 vendor/ring-0.16 是我们独有的 LoongArch 补件，
+          # 上游不存在同名目录 —— 若列入强刷会先被 git rm 再跳过 checkout，
+          # 直接把补件删掉，务必保持排除。
+          for d in vendor/webrtc vendor/webrtc-ice vendor/webrtc-dtls vendor/webrtc-srtp vendor/ffnvcodec; do
+            git rm -rqf "$d" 2>/dev/null || true
+            if git cat-file -e "$TAG:$d" 2>/dev/null; then
+              git checkout "$TAG" -- "$d"
+            fi
+          done
+          git add -A
+          git diff --cached --quiet || git -c core.editor=true commit --amend --no-edit
           echo "merged $TAG"
 
       - name: Reconcile Cargo manifest and lockfile
         if: steps.detect.outputs.skip == 'false'
         run: |
           TAG="${{ steps.detect.outputs.up_tag }}"
-          VER="${TAG#v}"
-          python3 - "$VER" <<'EOF'
-          import re, sys
-          ver = sys.argv[1]
-          cur = open('Cargo.toml').read()
-          ours = open('/tmp/ours-cargo.toml').read()
-
-          # 1) 版本号取上游新版本
-          cur = re.sub(r'^version = ".*"$', f'version = "{ver}"', cur, count=1, flags=re.M)
-
-          # 2) [patch.crates-io] 整段恢复我们这边的（vendor 补丁集是我们的 LoongArch 根基）
-          mo = re.search(r'^\[patch\.crates-io\]$.*', ours, re.M | re.S)
-          mc = re.search(r'^\[patch\.crates-io\]$.*', cur, re.M | re.S)
-          if mo and mc:
-              cur = cur[:mc.start()] + mo.group(0)
-
-          # 3) 被 patch 的 crate，其顶层依赖行版本要求以我们为准
-          #    （如 webrtc = "0.11" 配 vendor/webrtc 0.11.0；上游可能还停在 0.10）
-          if mo:
-              patched = set(re.findall(r'^(\S+)\s*=\s*\{\s*path', mo.group(0), re.M))
-              for name in patched:
-                  pat = re.compile(rf'^{re.escape(name)}\s*=\s*(.+)$', re.M)
-                  o, c = pat.search(ours), pat.search(cur)
-                  if o and c and o.group(1) != c.group(1):
-                      cur = cur[:c.start()] + f'{name} = {o.group(1)}' + cur[c.end():]
-                      print(f"kept ours: {name} = {o.group(1)}")
-          open('Cargo.toml', 'w').write(cur)
+          # Cargo.toml / Cargo.lock 整体取上游（依赖布局以上游为唯一权威），
+          # 仅回填 LoongArch 必需的补丁行（nix 0.26 / ring 0.16）。
+          git checkout "$TAG" -- Cargo.toml Cargo.lock
+          python3 - <<'EOF'
+          p = 'Cargo.toml'
+          s = open(p).read()
+          lines = (
+              '# LoongArch: nix 0.26 predates loongarch64; webrtc-util pins nix 0.26.\n'
+              'nix = { path = "vendor/nix-0.26" }\n'
+              '# LoongArch: ring 0.16.20 (via rcgen 0.11) has no loongarch64 asm; no-asm build.\n'
+              'ring = { path = "vendor/ring-0.16" }\n'
+          )
+          if 'vendor/nix-0.26' not in s:
+              s = s.replace('[patch.crates-io]\n', '[patch.crates-io]\n' + lines, 1)
+              open(p, 'w').write(s)
+              print('patched entries appended')
+          else:
+              print('patched entries already present')
           EOF
 
-          # 4) 依据对账后的 Cargo.toml 最小化重新生成 Cargo.lock，并验证一致性
-          #    （runner 预装 cargo；万一没有则现场装最小工具链）
+          # 依据对账后的 Cargo.toml 最小化重新生成 Cargo.lock，并验证一致性
           cargo --version || { curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; }
           cargo metadata --format-version 1 > /dev/null
           cargo metadata --locked --format-version 1 > /dev/null \

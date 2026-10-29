@@ -1,9 +1,8 @@
 use std::io;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use portable_atomic::AtomicBool;
 use util::Conn;
 
 use super::*;
@@ -243,9 +242,5 @@ impl Conn for AgentConn {
 
     async fn close(&self) -> std::result::Result<(), util::Error> {
         Ok(())
-    }
-
-    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
-        self
     }
 }
