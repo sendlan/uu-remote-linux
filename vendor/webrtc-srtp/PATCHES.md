@@ -1,6 +1,6 @@
-# Local patch to webrtc-srtp 0.13.0
+# Local patch to webrtc-srtp 0.12.0
 
-Source: crates.io webrtc-srtp 0.13.0 (MIT / Apache-2.0; upstream licenses retained).
+Source: crates.io webrtc-srtp 0.12.0 (MIT / Apache-2.0; upstream licenses retained).
 
 `SrtpSsrcState` estimates the rollover counter with the half-sequence-space rule from
 RFC 3711 Appendix A and only advances to the highest packet index seen. Upstream used a

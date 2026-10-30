@@ -1,6 +1,6 @@
 [package]
 name = "uu-remote-linux"
-version = "0.2.40"
+version = "0.2.41"
 edition = "2021"
 default-run = "uuremote-server"
 authors = ["uu-remote-linux contributors"]
@@ -70,9 +70,9 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring
 cc = "1.0"
 
 [patch.crates-io]
-# LoongArch: nix 0.26 predates loongarch64; webrtc-util 0.9 pins nix 0.26.
+# LoongArch: nix 0.26 predates loongarch64; webrtc-util pins nix 0.26.
 nix = { path = "vendor/nix-0.26" }
-# LoongArch: ring 0.16.20 (via rcgen 0.11) has no loongarch64 asm; build as no-asm target.
+# LoongArch: ring 0.16.20 (via rcgen 0.11) has no loongarch64 asm; no-asm build.
 ring = { path = "vendor/ring-0.16" }
 # RTP rollover counter survives delayed NACK retransmissions (vendor/webrtc-srtp/PATCHES.md).
 webrtc-srtp = { path = "vendor/webrtc-srtp" }

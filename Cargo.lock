@@ -1657,7 +1657,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.3",
  "rustls 0.23.45",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -1695,7 +1695,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -2768,7 +2768,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uu-remote-linux"
-version = "0.2.40"
+version = "0.2.41"
 dependencies = [
  "ab_glyph",
  "async-trait",
@@ -3004,8 +3004,6 @@ dependencies = [
 [[package]]
 name = "webrtc-dtls"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "188ce061a2371bdf4df54b136c89a6df243ed0ef6b03431b4bd18482cd718dfe"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3108,8 +3106,6 @@ dependencies = [
 [[package]]
 name = "webrtc-srtp"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "383b0f0f73ee6cce396bdbc4d54ec661861a59eae9fc988914c1a8d82c5ac272"
 dependencies = [
  "aead",
  "aes",
@@ -3450,11 +3446,3 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[patch.unused]]
-name = "webrtc-dtls"
-version = "0.10.0"
-
-[[patch.unused]]
-name = "webrtc-srtp"
-version = "0.13.0"

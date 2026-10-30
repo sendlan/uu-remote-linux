@@ -4,19 +4,13 @@ mod crypto_test;
 pub mod crypto_cbc;
 pub mod crypto_ccm;
 pub mod crypto_gcm;
-pub mod padding;
 
 use std::convert::TryFrom;
 use std::sync::Arc;
 
 use der_parser::oid;
 use der_parser::oid::Oid;
-
-use rustls::client::danger::ServerCertVerifier;
-use rustls::pki_types::{CertificateDer, ServerName};
-use rustls::server::danger::ClientCertVerifier;
-
-use rcgen::{generate_simple_self_signed, CertifiedKey, KeyPair};
+use rcgen::KeyPair;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, Ed25519KeyPair};
 
@@ -29,7 +23,7 @@ use crate::signature_hash_algorithm::{HashAlgorithm, SignatureAlgorithm, Signatu
 #[derive(Clone, PartialEq, Debug)]
 pub struct Certificate {
     /// DER-encoded certificates.
-    pub certificate: Vec<CertificateDer<'static>>,
+    pub certificate: Vec<rustls::Certificate>,
     /// Private key.
     pub private_key: CryptoPrivateKey,
 }
@@ -39,11 +33,12 @@ impl Certificate {
     ///
     /// See [`rcgen::generate_simple_self_signed`].
     pub fn generate_self_signed(subject_alt_names: impl Into<Vec<String>>) -> Result<Self> {
-        let CertifiedKey { cert, key_pair } =
-            generate_simple_self_signed(subject_alt_names).unwrap();
+        let cert = rcgen::generate_simple_self_signed(subject_alt_names)?;
+        let key_pair = cert.get_key_pair();
+
         Ok(Certificate {
-            certificate: vec![cert.der().to_owned()],
-            private_key: CryptoPrivateKey::try_from(&key_pair)?,
+            certificate: vec![rustls::Certificate(cert.serialize_der()?)],
+            private_key: CryptoPrivateKey::try_from(key_pair)?,
         })
     }
 
@@ -54,13 +49,14 @@ impl Certificate {
         subject_alt_names: impl Into<Vec<String>>,
         alg: &'static rcgen::SignatureAlgorithm,
     ) -> Result<Self> {
-        let params = rcgen::CertificateParams::new(subject_alt_names).unwrap();
-        let key_pair = rcgen::KeyPair::generate_for(alg).unwrap();
-        let cert = params.self_signed(&key_pair).unwrap();
+        let mut params = rcgen::CertificateParams::new(subject_alt_names);
+        params.alg = alg;
+        let cert = rcgen::Certificate::from_params(params)?;
+        let key_pair = cert.get_key_pair();
 
         Ok(Certificate {
-            certificate: vec![cert.der().to_owned()],
-            private_key: CryptoPrivateKey::try_from(&key_pair)?,
+            certificate: vec![rustls::Certificate(cert.serialize_der()?)],
+            private_key: CryptoPrivateKey::try_from(key_pair)?,
         })
     }
 
@@ -81,7 +77,7 @@ impl Certificate {
             )));
         }
 
-        let keypair = KeyPair::try_from(pems[0].contents())
+        let keypair = rcgen::KeyPair::from_der(pems[0].contents())
             .map_err(|e| Error::InvalidPEM(format!("can't decode keypair: {e}")))?;
 
         let mut rustls_certs = Vec::new();
@@ -92,7 +88,7 @@ impl Certificate {
                     p.tag()
                 )));
             }
-            rustls_certs.push(CertificateDer::from(p.contents().to_vec()));
+            rustls_certs.push(rustls::Certificate(p.contents().to_vec()));
         }
 
         Ok(Certificate {
@@ -111,7 +107,7 @@ impl Certificate {
         for rustls_cert in &self.certificate {
             data.push(pem::Pem::new(
                 "CERTIFICATE".to_string(),
-                rustls_cert.as_ref(),
+                rustls_cert.0.clone(),
             ));
         }
         pem::encode_many(&data)
@@ -430,14 +426,14 @@ pub(crate) fn verify_certificate_verify(
     )
 }
 
-pub(crate) fn load_certs(raw_certificates: &[Vec<u8>]) -> Result<Vec<CertificateDer<'static>>> {
+pub(crate) fn load_certs(raw_certificates: &[Vec<u8>]) -> Result<Vec<rustls::Certificate>> {
     if raw_certificates.is_empty() {
         return Err(Error::ErrLengthMismatch);
     }
 
     let mut certs = vec![];
     for raw_cert in raw_certificates {
-        let cert = CertificateDer::from(raw_cert.to_vec());
+        let cert = rustls::Certificate(raw_cert.to_vec());
         certs.push(cert);
     }
 
@@ -446,19 +442,16 @@ pub(crate) fn load_certs(raw_certificates: &[Vec<u8>]) -> Result<Vec<Certificate
 
 pub(crate) fn verify_client_cert(
     raw_certificates: &[Vec<u8>],
-    cert_verifier: &Arc<dyn ClientCertVerifier>,
-) -> Result<Vec<CertificateDer<'static>>> {
+    cert_verifier: &Arc<dyn rustls::server::ClientCertVerifier>,
+) -> Result<Vec<rustls::Certificate>> {
     let chains = load_certs(raw_certificates)?;
 
     let (end_entity, intermediates) = chains
         .split_first()
         .ok_or(Error::ErrClientCertificateRequired)?;
 
-    match cert_verifier.verify_client_cert(
-        end_entity,
-        intermediates,
-        rustls::pki_types::UnixTime::now(),
-    ) {
+    match cert_verifier.verify_client_cert(end_entity, intermediates, std::time::SystemTime::now())
+    {
         Ok(_) => {}
         Err(err) => return Err(Error::Other(err.to_string())),
     };
@@ -468,12 +461,12 @@ pub(crate) fn verify_client_cert(
 
 pub(crate) fn verify_server_cert(
     raw_certificates: &[Vec<u8>],
-    cert_verifier: &Arc<dyn ServerCertVerifier>,
+    cert_verifier: &Arc<dyn rustls::client::ServerCertVerifier>,
     server_name: &str,
-) -> Result<Vec<CertificateDer<'static>>> {
+) -> Result<Vec<rustls::Certificate>> {
     let chains = load_certs(raw_certificates)?;
-    let server_name = match ServerName::try_from(server_name) {
-        Ok(server_name) => server_name,
+    let dns_name = match rustls::server::DnsName::try_from_ascii(server_name.as_ref()) {
+        Ok(dns_name) => dns_name,
         Err(err) => return Err(Error::Other(err.to_string())),
     };
 
@@ -483,9 +476,10 @@ pub(crate) fn verify_server_cert(
     match cert_verifier.verify_server_cert(
         end_entity,
         intermediates,
-        &server_name,
+        &rustls::ServerName::DnsName(dns_name.to_owned()),
+        &mut [].into_iter(),
         &[],
-        rustls::pki_types::UnixTime::now(),
+        std::time::SystemTime::now(),
     ) {
         Ok(_) => {}
         Err(err) => return Err(Error::Other(err.to_string())),
