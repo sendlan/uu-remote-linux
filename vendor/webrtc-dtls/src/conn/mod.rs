@@ -4,12 +4,11 @@ mod conn_test;
 use std::io::{BufReader, BufWriter};
 use std::marker::{Send, Sync};
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use log::*;
-use portable_atomic::{AtomicBool, AtomicU16};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::Duration;
 use util::replay_detector::*;
@@ -140,10 +139,6 @@ impl Conn for DTLSConn {
     async fn close(&self) -> UtilResult<()> {
         self.close().await.map_err(util::Error::from_std)
     }
-
-    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
-        self
-    }
 }
 
 impl DTLSConn {
@@ -221,33 +216,16 @@ impl DTLSConn {
             client_cert_verifier: if config.client_auth as u8
                 >= ClientAuthType::VerifyClientCertIfGiven as u8
             {
-                Some(
-                    rustls::server::WebPkiClientVerifier::builder(Arc::new(config.client_cas))
-                        .allow_unauthenticated()
-                        .build()
-                        .unwrap_or(
-                            rustls::server::WebPkiClientVerifier::builder(Arc::new(
-                                gen_self_signed_root_cert(),
-                            ))
-                            .allow_unauthenticated()
-                            .build()
-                            .unwrap(),
-                        ),
-                )
+                Some(Arc::new(rustls::server::AllowAnyAuthenticatedClient::new(
+                    config.client_cas,
+                )))
             } else {
                 None
             },
-            server_cert_verifier: rustls::client::WebPkiServerVerifier::builder(Arc::new(
+            server_cert_verifier: Arc::new(rustls::client::WebPkiVerifier::new(
                 config.roots_cas,
-            ))
-            .build()
-            .unwrap_or(
-                rustls::client::WebPkiServerVerifier::builder(
-                    Arc::new(gen_self_signed_root_cert()),
-                )
-                .build()
-                .unwrap(),
-            ),
+                None,
+            )),
             retransmit_interval,
             //log: logger,
             initial_epoch: 0,
@@ -779,7 +757,8 @@ impl DTLSConn {
         local_epoch: &Arc<AtomicU16>,
         handshake_completed_successfully: &Arc<AtomicBool>,
     ) -> Result<()> {
-        let n = next_conn.recv(buf).await?;
+        let network_result = next_conn.recv(buf).await;
+        let n = network_result?;
         let pkts = unpack_datagram(&buf[..n])?;
         let mut has_handshake = false;
         for pkt in pkts {
@@ -856,7 +835,8 @@ impl DTLSConn {
                         }
                     }
                 }
-                _ = ctx.handshake_done_rx.recv() => {}
+                _ = ctx.handshake_done_rx.recv() => {
+                }
             }
         }
 
@@ -1151,7 +1131,8 @@ impl DTLSConn {
 
                 ctx.replay_detector[h.epoch as usize].accept();
 
-                let _ = ctx.decrypted_tx.send(Ok(a.data)).await;
+                let application_len = a.data.len();
+                let delivery_result = ctx.decrypted_tx.send(Ok(a.data)).await;
                 //TODO
                 /*select {
                     case self.decrypted < - content.data:

@@ -1,6 +1,7 @@
 use std::io;
 use std::string::FromUtf8Error;
 
+use rcgen::RcgenError;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError as MpscSendError;
 use util::KeyingMaterialExporterError;
@@ -161,7 +162,7 @@ pub enum Error {
     #[error("{0}")]
     P256(#[source] P256Error),
     #[error("{0}")]
-    RcGen(#[from] rcgen::Error),
+    RcGen(#[from] RcgenError),
     #[error("mpsc send: {0}")]
     MpscSend(String),
     #[error("keying material: {0}")]

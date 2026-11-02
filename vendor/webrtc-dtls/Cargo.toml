@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "webrtc-dtls"
-version = "0.10.0"
+version = "0.9.0"
 authors = ["Rain Liu <yuliu@webrtc.rs>"]
 description = "A pure Rust implementation of DTLS"
 homepage = "https://webrtc.rs"
@@ -103,9 +103,6 @@ version = "0.13"
 version = "3"
 optional = true
 
-[dependencies.portable-atomic]
-version = "1.6"
-
 [dependencies.rand]
 version = "0.8"
 
@@ -113,18 +110,14 @@ version = "0.8"
 version = "0.6"
 
 [dependencies.rcgen]
-version = "0.13"
+version = "0.11"
 
 [dependencies.ring]
 version = "0.17"
 
 [dependencies.rustls]
-version = "0.23"
-features = [
-    "std",
-    "ring",
-]
-default-features = false
+version = "0.21"
+features = ["dangerous_configuration"]
 
 [dependencies.sec1]
 version = "0.7"
@@ -148,21 +141,10 @@ version = "1"
 
 [dependencies.tokio]
 version = "1.32.0"
-features = [
-    "fs",
-    "io-util",
-    "io-std",
-    "macros",
-    "net",
-    "parking_lot",
-    "rt",
-    "rt-multi-thread",
-    "sync",
-    "time",
-]
+features = ["full"]
 
 [dependencies.util]
-version = "0.9.0"
+version = "0.8.1"
 features = ["conn"]
 default-features = false
 package = "webrtc-util"
@@ -172,7 +154,7 @@ version = "2"
 features = ["static_secrets"]
 
 [dependencies.x509-parser]
-version = "0.16"
+version = "0.15"
 
 [dev-dependencies.chrono]
 version = "0.4.28"

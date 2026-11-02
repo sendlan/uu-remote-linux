@@ -11,7 +11,10 @@ permissions:
   packages: write
 
 env:
-  PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && format('0.0.0-test.{0}', github.run_number) || github.ref_name }}
+  # Dispatch on a tag ref (used by sync-upstream to trigger a real release,
+  # since GITHUB_TOKEN tag pushes don't fire workflows) builds the tag version
+  # and publishes; dispatch on a branch ref stays validate-only.
+  PACKAGE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('0.0.0-test.{0}', github.run_number) }}
 
 jobs:
   # GNOME/KDE Wayland engine: libei >= 1.1 first ships in Ubuntu 24.04, so this plugin needs
@@ -166,7 +169,7 @@ jobs:
   # One publisher, so the matrix legs never race to create the release.
   release:
     needs: [build, build-loongarch]
-    if: github.event_name != 'workflow_dispatch'
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5

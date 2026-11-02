@@ -2,9 +2,9 @@ name: Sync upstream
 
 # 每天跟踪上游（VallierDev/uu-remote-linux）最新 release：
 # 有新版本时 merge 进 main、bump 版本号、生成 release notes、
-# 打同名 tag —— tag push 会触发 Release workflow 构建四架构包。
-# 需要 repo secret: SYNC_TOKEN（有 repo contents 权限的 PAT；
-# 用 GITHUB_TOKEN 推 tag 不会触发其他 workflow）。
+# 打同名 tag，再通过 workflow_dispatch 直接触发 Release workflow
+# 构建四架构包（GITHUB_TOKEN 的 tag push 事件不触发其他 workflow，
+# 但 workflow_dispatch 豁免，因此无需 PAT/SYNC_TOKEN）。
 
 on:
   schedule:
@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: sync-upstream
@@ -38,7 +39,10 @@ jobs:
       - name: Detect latest upstream release
         id: detect
         run: |
-          UP_TAG=$(curl -sf "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name // empty')
+          # API 失败必须响亮报错：静默 skip 会让 fork 停在旧版本数天无人察觉
+          UP_TAG=$(curl -sf "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" \
+            || { echo "::error::upstream releases API failed (rate-limited?)"; exit 1; } \
+            | jq -r '.tag_name // empty')
           echo "up_tag=$UP_TAG" >> "$GITHUB_OUTPUT"
           # 查 fork 远端（不是本地 refs——上游 tag 已被 fetch 进本地，查本地恒命中）
           if [ -z "$UP_TAG" ]; then
@@ -156,3 +160,23 @@ jobs:
           # fetch upstream 时同名 tag 已在本地（指向上游提交），强制重打到我们的合并提交
           git tag -f "$TAG"
           git push -f origin "$TAG"
+
+      # GITHUB_TOKEN 触发的 push/tag 事件不会触发其他 workflow（防递归），
+      # 但 workflow_dispatch 是豁免事件 —— 直接 dispatch Release 构建新 tag。
+      - name: Trigger Release for new tag
+        if: steps.detect.outputs.skip == 'false'
+        run: |
+          TAG="${{ steps.detect.outputs.up_tag }}"
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /tmp/dispatch-resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" \
+              -d "{\"ref\":\"$TAG\"}")
+            # 204 = accepted；tag 事件传播延迟时可能 422，重试等 tag 可见
+            [ "$code" = "204" ] && { echo "Release dispatched on $TAG"; exit 0; }
+            echo "attempt $i: HTTP $code, retrying in 15s"; sleep 15
+          done
+          echo "::error::failed to dispatch Release on $TAG (HTTP $code)"
+          cat /tmp/dispatch-resp.json 2>/dev/null || true
+          exit 1

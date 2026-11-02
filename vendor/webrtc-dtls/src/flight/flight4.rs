@@ -578,7 +578,7 @@ impl Flight for Flight4 {
                             certificate: certificate
                                 .certificate
                                 .iter()
-                                .map(|x| x.as_ref().to_owned())
+                                .map(|x| x.0.clone())
                                 .collect(),
                         },
                     ))),
