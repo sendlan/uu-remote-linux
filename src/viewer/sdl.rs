@@ -19,6 +19,9 @@ impl Window {
         let name=super::device_label(std::env::var("UU_VIEWER_DEVICE_NAME").ok().as_deref()).to_owned();
         let window=video.window(&format!("{name} · {}",crate::i18n::s("UU 远程 Linux 控制端","UU Remote Linux viewer")),1280,720).position_centered().resizable().build().map_err(|_|"Window creation failed")?;
         let mut canvas=window.into_canvas().build().map_err(|_|"Renderer creation failed")?;
+        // This window forwards scancodes, not SDL_TEXTINPUT. SDL enables text input by
+        // default; its X11 IME path can consume keys before KeyDown/KeyUp (#149).
+        video.text_input().stop();
         // Wayland maps a toplevel only after its first buffer; without this the window stays
         // invisible until the first decoded frame, which a stalled stream never delivers.
         canvas.set_draw_color(LOADING_BG);canvas.clear();canvas.present();
@@ -139,7 +142,8 @@ impl Window {
     fn command(&mut self,command:hud::Command){
         let st=&mut self.chrome.state;
         match command {
-            hud::Command::Quality(q)=>st.quality=q, hud::Command::Fps(f)=>st.fps=f, hud::Command::Chroma(c)=>st.chroma=c,
+            hud::Command::Quality(q)=>{st.quality=q;hud::save_prefs(st)}, hud::Command::Fps(f)=>{st.fps=f;hud::save_prefs(st)},
+            hud::Command::Chroma(c)=>{st.chroma=c;hud::save_prefs(st)},
             hud::Command::FollowRemote(b)=>st.follow_remote=b, hud::Command::Volume(v)=>st.volume=v,
             hud::Command::AutoLock(b)=>st.auto_lock=b, hud::Command::HostMute(b)=>st.host_mute=b, hud::Command::Watch(b)=>st.watch=b,
             hud::Command::OneToOne(b)=>{st.one_to_one=b;hud::save_prefs(st)},
@@ -156,6 +160,13 @@ impl Window {
         self.chrome.commands.push(command);
     }
     pub fn take_commands(&mut self)->Vec<hud::Command>{std::mem::take(&mut self.chrome.commands)}
+    /// The host starts every session at the official defaults; repeat the saved choices that differ.
+    pub fn restore_remote_settings(&mut self){
+        let(st,d)=(&self.chrome.state,hud::State::default());let c=&mut self.chrome.commands;
+        if st.quality!=d.quality {c.push(hud::Command::Quality(st.quality));}
+        if st.fps!=d.fps {c.push(hud::Command::Fps(st.fps));}
+        if st.chroma!=d.chroma {c.push(hud::Command::Chroma(st.chroma));}
+    }
     pub fn state(&self)->&hud::State{&self.chrome.state}
     pub fn sync_chroma(&mut self,chroma:u32){if chroma!=0 {self.chrome.state.chroma=chroma;}}
     pub fn set_stage(&mut self,stage:&str){self.chrome.stage=stage.into();}
@@ -391,7 +402,11 @@ pub async fn run(session:&mut Session,window:&mut Window,decoder:&mut dyn super:
         }
         Err(e)=>{ log::warn!("Type IPC not started: {e}"); None }
     };
-    let mut command_open=true;let mut requested=false;let mut type_requested=false;
+    let mut native_gamepad=if super::native_gamepad::enabled(){
+        if window.mac{return Err(crate::i18n::s("原生手柄实验仅支持 Windows 被控端","Native gamepad experiment requires a Windows host").into())}
+        Some(super::native_gamepad::NativeGamepad::new(&window._sdl,session.peer.rumble.clone())?)
+    }else{None};
+    let mut command_open=true;let mut requested=false;let mut type_requested=false;let mut restored=false;
     let mut type_job:Option<TypeJob>=None;
     let mut terminate=tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|_|"Cannot watch termination")?;
     let mut audio=super::audio::Playback::new(&window._sdl,session.peer.audio.clone());
@@ -405,7 +420,7 @@ pub async fn run(session:&mut Session,window:&mut Window,decoder:&mut dyn super:
     let mut last=(0u64,0u64,0u64,0u64,std::time::Instant::now());
     let mut codec_name="--";
     // After a local drop the decoder has no reference picture; P-frames would only smear blocks.
-    let mut await_key=false;
+    let mut key_gate=super::desktop::KeyGate::new();
     let mut next_thumb=std::time::Instant::now()+std::time::Duration::from_secs(5);
     let result=async {
         loop {tokio::select!{
@@ -464,6 +479,7 @@ pub async fn run(session:&mut Session,window:&mut Window,decoder:&mut dyn super:
                 if let Some(playback)=audio.as_mut(){if playback.pump().is_err(){log::warn!("Viewer audio playback stopped");audio=None;}}
                 let (quit,mut messages)=window.poll(&mut input);
                 if !window.has_picture() {window.loading_frame(false);}
+                if !restored && session.peer.ready(super::rtc::ReadyPolicy::EchoOnly,false) {restored=true;window.restore_remote_settings();}
                 for command in window.take_commands() {
                     seq+=1;
                     let control=match command {
@@ -528,28 +544,28 @@ pub async fn run(session:&mut Session,window:&mut Window,decoder:&mut dyn super:
                         type_job=None;
                     }
                 }
+                if let Some(pad)=native_gamepad.as_mut(){
+                    let active=!quit&&window.focused&&input.enabled()&&!window.chrome.menu.open&&type_job.is_none()
+                        &&session.peer.ready(super::rtc::ReadyPolicy::EchoOnly,false)
+                        &&session.peer.observed.control_open.load(std::sync::atomic::Ordering::Acquire)
+                        &&session.peer.pc.connection_state()==webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected;
+                    messages.extend(pad.poll(active));
+                }
                 if session.peer.ready(super::rtc::ReadyPolicy::EchoOnly,false){for m in messages{session.peer.send_input(&m).await?;}}
                 else {input.release_all();}
                 if quit{return Ok(())}
-                // At most one AU per iteration keeps local event polling responsive.
-                if let Some(au)=session.peer.desktop.units.pop(){
-                    if session.peer.desktop.reset.swap(false,std::sync::atomic::Ordering::AcqRel){decoder.reset();await_key=true;}
-                    if await_key && !super::desktop::is_key_frame(au.codec,&au.data) {session.peer.desktop.pli.store(true,std::sync::atomic::Ordering::Release);}
-                    else {
-                        await_key=false;
-                        decoder.set_codec(au.codec)?;
-                        codec_name=if au.codec==super::media::Codec::H265 {"H.265"} else {"H.264"};
-                        super::desktop::display(decoder,window,&au.data,au.codec,&session.peer.desktop.pli)?;
-                    }}
-                // A picture can finish after its access unit was written; show it without waiting
-                // for the next one (a single keystroke may change the remote screen only once).
-                else {super::desktop::drain(decoder,window)?;}
+                if let Some(codec)=super::desktop::pump(&session.peer.desktop,decoder,window,&mut key_gate)? {
+                    codec_name=if codec==super::media::Codec::H265 {"H.265"} else {"H.264"};
+                }
             }
         }}
     }.await;
     if let Some(frame)=window.last_frame.as_ref() {if let Err(e)=super::thumbs::save(device,frame){log::debug!("Viewer thumbnail not saved: {e}");}}
     #[cfg(uu_gtk)] if let Some(f)=files {f.abort();let _=f.await;super::tools_ui::hide();session.peer.tools.lock().unwrap().take();}
     if let Some(t)=type_ipc {t.abort();let _=t.await;}
+    if let Some(pad)=native_gamepad.as_mut(){for m in pad.close(){
+        let _=tokio::time::timeout(std::time::Duration::from_millis(300),session.peer.send_input(&m)).await;
+    }}
     for m in input.release_all(){let _=session.peer.send_input(&m).await;}
     result
 }
@@ -695,6 +711,33 @@ async fn pump_type_job(job: &mut TypeJob, session: &mut Session, window: &mut Wi
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[cfg_attr(target_os="macos",ignore)]
+    #[test] fn remote_window_disables_local_text_input_and_forwards_shift(){
+        if std::env::var_os("UU_VIEWER_IME_TEST_CHILD").is_none(){
+            let output=std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","viewer::sdl::tests::remote_window_disables_local_text_input_and_forwards_shift","--test-threads=1"])
+                .env("SDL_VIDEODRIVER","dummy").env("UU_VIEWER_IME_TEST_CHILD","1").output().unwrap();
+            assert!(output.status.success(),"{}{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));return
+        }
+        let mut window=Window::new().unwrap();
+        assert!(!window.canvas.window().subsystem().text_input().is_active());
+        let id=window.canvas.window().id();
+        let key=|down,scan|if down {
+            Event::KeyDown{timestamp:0,window_id:id,keycode:None,scancode:Some(scan),keymod:sdl2::keyboard::Mod::NOMOD,repeat:false}
+        }else{
+            Event::KeyUp{timestamp:0,window_id:id,keycode:None,scancode:Some(scan),keymod:sdl2::keyboard::Mod::NOMOD,repeat:false}
+        };
+        let push=|event|window._sdl.event().unwrap().push_event(event).unwrap();
+        use sdl2::keyboard::Scancode as S;
+        for event in [key(true,S::LShift),key(false,S::LShift),key(true,S::A),key(false,S::A),
+            key(true,S::RShift),Event::Window{timestamp:0,window_id:id,win_event:WindowEvent::FocusLost},
+            Event::Window{timestamp:0,window_id:id,win_event:WindowEvent::FocusGained}] {push(event);}
+        let (_,messages)=window.poll(&mut Input::new(false));
+        let keys:Vec<_>=messages.iter().filter_map(|m|Some((m.get("action")?.as_str()?,m.get("key")?.as_i64()?))).collect();
+        assert_eq!(keys,vec![("kbd_press",0xa0),("kbd_release",0xa0),("kbd_press",0x41),("kbd_release",0x41),
+            ("kbd_press",0xa1),("kbd_release",0xa1)]);
+        assert!(!window.canvas.window().subsystem().text_input().is_active());
+    }
     // macOS: SDL video must start on the main thread, which the test harness does not use; CI runs it on Linux.
     #[cfg_attr(target_os="macos",ignore)]
     #[tokio::test] async fn clipboard_requests_use_existing_window(){

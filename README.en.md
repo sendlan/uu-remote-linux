@@ -23,6 +23,13 @@
 <p align="center"><img src="docs/images/main-window.png" width="620" alt="Host main window: remote assistance and account"></p>
 <p align="center"><sub>Linux host main window: remote assistance and account (device ID, code and account redacted). The UI is available in Chinese and English (see [Language](#language--语言)).</sub></p>
 
+## Appearance / 外观
+
+Choose **System / Light / Dark** (default: System) in the viewer's **Settings → General → Appearance**, or via the gear settings button in host / tool windows.
+The choice is saved to `$XDG_CONFIG_HOME/uuremote/theme` (default `~/.config/uuremote/theme`).
+
+<p align="center"><img src="docs/images/appearance-light.png" width="360" alt="Light appearance (synthetic devices)"> <img src="docs/images/appearance-dark.png" width="360" alt="Dark appearance (synthetic devices)"></p>
+
 ## Language / 语言
 
 The language is picked once at start, in this order:
@@ -100,7 +107,9 @@ plugins, permissions and encoders only, no account data, tokens or addresses) an
 Wayland limits: captures one screen by default; Hyprland can enable monitor switching as described below. Resolution is fixed. The native Hyprland backend now pipelines two shm screencopy buffers and passes the viewer's requested fps to both capture pacing and the encoder. Actual fps remains limited by the compositor, rendering and readback (the old serial path measured about 16–22 fps at 2560x1600; the pipeline is VM-measured only, not a hardware guarantee). The portal backend does not support dynamic resolution; see below for GNOME wake and lock recovery; the clipboard syncs while the viewer's remote window has focus. On the first connection the desktop asks for "Remote Desktop / Screen Sharing"
 permission; the permission is remembered once granted.
 
-**Mobile IME typing and clipboard on Wayland**: Mobile IME text (`text_input`) on Wayland is typed through spare keycodes on wlroots compositors. On Portal (GNOME / KDE) or compositors where keycodes are exhausted, it automatically falls back to typing via "system clipboard write + `Shift+Insert` (or `UU_WAYLAND_PASTE_KEY=ctrl_v`)". **Note**: This fallback replaces the host's existing clipboard contents and may echo back to the viewer's clipboard via two-way sync; set `UU_WAYLAND_TEXT=0` to completely disable Wayland mobile text input and clipboard paste fallback.
+**Touch from mobile viewers (GNOME)**: in touch mode the Android/iOS viewers send a finger as a left-button drag, which on a desktop selects text. On the portal backend the host decides per press: a finger that moves more than a few pixels within 0.45 s scrolls smoothly (`NotifyPointerAxis`; the content follows the finger, also in terminals, and the last event lets clients coast), one held still selects like a mouse drag, and a short press clicks. This needs no touchscreen consent. `UU_TOUCH_INPUT=touch` instead replays drags as one finger on the portal touchscreen, which the host requests where the portal offers it; a consent saved before touch support restores keyboard and pointer only, so the first drag then asks the host once more in the background (the GNOME share dialog, which the phone also sees; it closes after the consent timeout), and an approval for the same monitor switches to touch without reconnecting. The saved consent is never removed beforehand, and the host asks at most once per run. `UU_TOUCH_INPUT=0` keeps mouse drags.
+
+**Mobile IME typing and clipboard on Wayland**: Mobile IME text (`text_input`) on Wayland is typed through spare keycodes on wlroots compositors. On GNOME (Portal) printable ASCII is typed as keysyms when the active input source is a Latin xkb layout (Mutter picks the key and Shift level); other text, KDE and compositors where keycodes are exhausted fall back to "system clipboard write + `Shift+Insert` (or `UU_WAYLAND_PASTE_KEY=ctrl_v`)". VTE terminals paste the PRIMARY selection on `Shift+Insert`, which is why ASCII is typed instead. **Note**: This fallback replaces the host's existing clipboard contents and may echo back to the viewer's clipboard via two-way sync; set `UU_WAYLAND_TEXT=0` to completely disable Wayland mobile text input and clipboard paste fallback.
 
 Scaled GNOME desktops using native Portal input use EIS on the same authorized session when `ConnectToEIS` and a screen `mapping_id` are available. Each axis is mapped using the matched region and actual frame dimensions, with no fixed resolution or scale factor. This avoids scaled-coordinate rejection by `NotifyPointerMotionAbsolute`. Portal builds require libei >= 1.1. Missing EIS support retains the legacy input path and its existing scaling limitations; other initialization failures are reported and trigger session recovery. After a successful EIS connection, all input uses EIS. Capture alone and uinput do not initialize EIS; missing optional logical dimensions do not block capture. Keyboard input uses the existing Windows VK to evdev mapping. Recovery keeps the encoder frame dimensions fixed but accepts logical-size changes after scaling. On GNOME, a display-change notification enables earlier recovery when previously streaming Portal capture remains paused without a valid format for a 200 ms grace after both conditions are present. Healthy renegotiation cancels the early check; repeated notifications do not postpone the same interruption. The five-second fallback remains without a related notification. Static video and valid-format pauses do not trigger recovery. Tested while connected on Ubuntu 26.04, GNOME Wayland, one 3840x2160 display: 200% -> 166.67% -> 200%, with continuously updating video and full-screen pointer control after recovery. Switching briefly freezes and goes black before recovering; five seconds is the fallback threshold, not total recovery time. See [#35](../../pull/35) for timing measurements and validation limits. Lock recovery still needs hardware acceptance testing; multi-monitor support, live resolution changes, and rotation/reflection transforms are outside this fix's scope. Capture settings remain at protocol version 4: advertised resolutions use pixel coordinates and DPR 1; Portal logical dimensions are used only for local input mapping.
 
@@ -142,7 +151,7 @@ On niri, `niri msg --json outputs` enumerates enabled monitors. Normal and 90/18
 | True color (4:4:4) | Supported (v0.1.15): the default FFmpeg pipeline with NVENC / libx264 encodes H.264 High 4:4:4; `inproc-av` native NVENC encodes H.264 High 4:4:4 / HEVC FRExt; VAAPI stays 4:2:0 and reports that to the client |
 | HDR | Not implemented |
 | Super screen / virtual display | Not implemented |
-| Privacy screen on the host | Not implemented |
+| Privacy screen on the host | Experimental, KDE Plasma Wayland (portal) only; off, picture and screen-off status labels verified with Mac 4.43.0; see [docs/privacy-screen.md](docs/privacy-screen.md) |
 | Microphone (viewer audio played on the host) | Not implemented (needs a virtual sound card) |
 | Plugins such as the WoW queue notifier | Not supported; the client is told that no plugins exist |
 | Linux login screen | The system login screen (before anyone logs in to the Linux desktop) cannot be controlled yet; use headless mode or a virtual desktop (see below). This is about the Linux login: **without a UU account** the host can now be used through remote assistance |
@@ -201,6 +210,8 @@ sudo apt install libwayland-dev libxkbcommon-dev wl-clipboard
 sudo apt install libglib2.0-dev libpipewire-0.3-dev libei-dev
 # optional: headers for the inproc-av VAAPI/DRI3 engines (libva itself is loaded at runtime)
 sudo apt install libva-dev libgbm-dev libx11-xcb-dev libxcb-dri3-dev libxcb-damage0-dev
+# In-process audio capture and Opus encoding for inproc-av
+sudo apt install libpulse-dev libopus-dev
 ```
 
 - A Rust toolchain is required (<https://rustup.rs>).
@@ -218,6 +229,9 @@ cargo build --release --features wayland,portal   # + GNOME/KDE on Wayland
 
 The viewer's `viewer-ffmpeg` feature supports **FFmpeg 6.x only** (`pkg-config --modversion libavcodec` = 60.x); FFmpeg 7+ fails inside `ffmpeg-sys-next` with `avfft.h file not found` (#63).
 The host's optional `--features inproc-av` encodes with hardware inside the process on X11. It does not link FFmpeg development libraries; it loads the NVIDIA driver libraries (`libcuda.so.1`, `libnvidia-encode.so.1`) at runtime for NVENC (needs a driver with NVENC API 12.1, 530 or newer) and `libva.so.2`/`libva-drm.so.2` for VAAPI. When the capture and encoder sizes match, NVENC reads the XShm buffer directly, saving one host-to-device copy; VAAPI runs in process under the same feature (DRI3 DMA-BUF zero copy, or XShm upload without DRI3, then VPP to NV12 and VCN; H.264/HEVC). CPU encoding and `UU_CAPTURE=grab` keep the FFmpeg process; if the in-process hardware session fails it falls back to the matching FFmpeg process pipeline, then to the CPU. The default build and the release packages need neither feature.
+
+On GNOME/KDE Wayland, enable in-process encoding with `cargo build --release --features wayland,portal,inproc-av` and `set-encoder vaapi`; support is limited to Portal + VAAPI.
+`UU_PORTAL_DMABUF=0` disables DMA-BUF in favor of in-process host upload; `UU_VIDEO_PIPELINE=process` restores external FFmpeg pipelines.
 
 ### 3. Log in
 
@@ -282,6 +296,8 @@ sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput
 
 `uaccess` grants access only to the user sitting at the machine. `UU_INPUT_BACKEND=uinput|native` forces a backend.
 X11 keeps XTest by default because it handles held keys correctly on high-latency links.
+
+ASCII text mapping through uinput requires X11/XWayland XKB; unmappable text keeps the existing text/clipboard path.
 
 ## Remote assistance and the main window (experimental)
 
@@ -577,6 +593,8 @@ No official "no desktop" error code was found for headless desktop offers, so th
 
 ## Experimental native viewer (uuremote-viewer)
 
+See [SDL viewer video scheduling](docs/viewer-video-scheduling.md).
+
 `uuremote-viewer` is a Linux **viewer/controller**: it connects to and controls other devices on your UU account (official Windows / Mac
 hosts or this project's Linux host), and can start remote assistance with someone's device ID and code. It is experimental and
 separate from the host `uuremote-server`; the default host build and behaviour are unchanged.
@@ -587,7 +605,8 @@ terminal emulator (`TERMINAL` selects one). From source: `sudo apt install libsd
 `cargo build --release --locked --features native-viewer,viewer-sdl --bin uuremote-viewer`.
 
 SDL clipboard access reuses the desktop window to avoid temporary-window Dock churn on GNOME Wayland (#37).
-Synchronization runs only while that window is focused and keeps the 30 KiB text limit. Selections without a supported
+On niri, data-control-capable `wl-clipboard` is used instead, so synchronization does not require window focus.
+Other SDL backends synchronize only while that window is focused. The 30 KiB text limit applies. Selections without a supported
 text format are skipped; empty-text detection depends on the SDL2 backend. Builds without SDL retain the command backend.
 SDL2 reads selections synchronously, so a slow selection owner can temporarily block the window; the bridge timeout cannot interrupt it.
 GNOME-to-official-Mac bidirectional clipboard synchronization is still unverified; this change does not resolve host compatibility.
@@ -621,6 +640,8 @@ GNOME-to-official-Mac bidirectional clipboard synchronization is still unverifie
 - Frames are decoded at the host's native resolution and scaled to the window with linear filtering; a host resolution
   change restarts the decoder. `UU_VIEWER_SIZE=WxH` forces a fixed letterboxed canvas instead.
 
+The SDL remote desktop window disables local IME text composition and forwards physical keys; use the remote host’s input method and its language toggle (for example, Shift) to enter Chinese.
+
 Mac targets use native macOS keycodes; Windows / Linux targets retain Windows VK. Keys follow physical positions, without
 automatically translating Ctrl to Command; on a Mac target the PC Super / Windows key acts as Command. Only verified target
 platform values 1 (Windows / this project's Linux host) and 4 (Mac) are accepted; unknown values fail explicitly. Account
@@ -645,3 +666,11 @@ assistance and ISO / JIS keyboards have not been tested live.
 
 "—" = not tested yet. Only use reboot/shutdown on machines you can restart. **Not tested live**: H.265 / 4:4:4 with official hosts, multiple monitors. Logs carry field
 numbers, sizes and states only, never keystrokes, clipboard or file contents, codes or credentials.
+
+### Native gamepad and rumble (experimental)
+
+The SDL viewer forwards one mapped controller and ordinary two-motor rumble through the existing desktop CONTROL channel to a Windows host.
+Default OFF: set `UU_VIEWER_NATIVE_GAMEPAD=1` to enable input; `UU_VIEWER_NATIVE_RUMBLE=0` disables feedback independently.
+Guide forwarding, multiple controllers and adaptive triggers are unsupported; suspend, forced exit and network recovery are not comprehensively verified.
+One reporting user tested input, phone-hotspot WAN, reconnect and rumble on one Windows/Steam Deck pair.
+See [protocol evidence, design and limits](docs/deckpad-native-gamepad.md).

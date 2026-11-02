@@ -15,6 +15,20 @@ impl std::error::Error for PortalError {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FrameVersion(usize, u64);
+
+#[repr(C)]
+#[derive(Default)]
+pub struct DmaFrame {
+    pub fd: i32,
+    pub fourcc: u32,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub offset: u32,
+    pub size: u32,
+    pub modifier: u64,
+}
+pub enum DmaCapture<T> { Frame(T), Pending, Cpu, Blank, Unavailable(i32) }
 #[cfg(unix)]
 #[path = "portal_permissions.rs"]
 mod permissions;
@@ -24,7 +38,9 @@ mod native {
     use std::{ffi::c_void, ptr::NonNull, sync::{Mutex, MutexGuard, TryLockError}};
     crate::engine_ffi! { crate::engine_plugin::Engine::Portal;
         fn uu_portal_open_persist(restore: *const libc::c_char, save: extern "C" fn(*const libc::c_char, *mut c_void), data: *mut c_void, error: *mut i32, width: *mut u32, height: *mut u32) -> *mut c_void;
+        fn uu_portal_open_virtual(restore: *const libc::c_char, save: extern "C" fn(*const libc::c_char, *mut c_void), data: *mut c_void, error: *mut i32, width: *mut u32, height: *mut u32) -> *mut c_void;
         fn uu_portal_open_persist_cancellable(restore: *const libc::c_char, save: extern "C" fn(*const libc::c_char, *mut c_void), save_data: *mut c_void, cancelled: extern "C" fn(*mut c_void) -> i32, cancel_data: *mut c_void, error: *mut i32, width: *mut u32, height: *mut u32) -> *mut c_void;
+        fn uu_portal_open_persist_capture(restore: *const libc::c_char, save: extern "C" fn(*const libc::c_char, *mut c_void), save_data: *mut c_void, cancelled: Option<extern "C" fn(*mut c_void) -> i32>, cancel_data: *mut c_void, prefer_dmabuf: i32, error: *mut i32, width: *mut u32, height: *mut u32) -> *mut c_void;
         fn uu_portal_clipboard_supported(portal: *mut c_void) -> i32;
         fn uu_portal_clipboard_ready(portal: *mut c_void) -> i32;
         fn uu_portal_clipboard_set(portal: *mut c_void, text: *const u8, length: usize) -> i32;
@@ -35,9 +51,16 @@ mod native {
         fn uu_portal_input_dispatch(portal: *mut c_void);
         fn uu_portal_reset_frame(portal: *mut c_void);
         fn uu_portal_capture_since(portal: *mut c_void, bgra: *mut u8, length: usize, revision: *mut u64) -> i32;
+        fn uu_portal_dmabuf_acquire(portal: *mut c_void, frame: *mut super::DmaFrame, revision: *mut u64) -> i32;
+        fn uu_portal_dmabuf_release(portal: *mut c_void);
+        fn uu_portal_dmabuf_disable(portal: *mut c_void);
         fn uu_portal_move(portal: *mut c_void, x: f64, y: f64, relative: i32) -> i32;
         fn uu_portal_button(portal: *mut c_void, button: i32, pressed: i32) -> i32;
         fn uu_portal_key(portal: *mut c_void, keysym: u32, keycode: i32, pressed: i32) -> i32;
+        fn uu_portal_scroll(portal: *mut c_void, dx: f64, dy: f64, finish: i32) -> i32;
+        fn uu_portal_touch_supported(portal: *mut c_void) -> i32;
+        fn uu_portal_touch_available(portal: *mut c_void) -> i32;
+        fn uu_portal_touch(portal: *mut c_void, phase: i32, x: f64, y: f64) -> i32;
         fn uu_portal_stream_position(portal: *mut c_void, x: *mut i32, y: *mut i32) -> i32;
         fn uu_portal_monitors(out: *mut libc::c_char, length: usize) -> i32;
         fn uu_portal_end(portal: *mut c_void);
@@ -88,7 +111,7 @@ mod native {
             was_locked.store(false, std::sync::atomic::Ordering::Release);
         }
     }
-    pub struct Session { handle: Mutex<Handle>, locked: tokio::sync::watch::Receiver<Option<bool>>, was_locked: std::sync::atomic::AtomicBool, recovery: Mutex<Recovery>, size: std::sync::atomic::AtomicU64, monitor: Mutex<Option<String>> }
+    pub struct Session { handle: Mutex<Handle>, locked: tokio::sync::watch::Receiver<Option<bool>>, was_locked: std::sync::atomic::AtomicBool, recovery: Mutex<Recovery>, size: std::sync::atomic::AtomicU64, monitor: Mutex<Option<String>>, virtual_output: std::sync::atomic::AtomicBool }
     impl Session {
         fn take_lock_observation(&self) -> Result<bool, String> {
             // A recovery in progress must see the lock even if another capture
@@ -114,7 +137,9 @@ mod native {
         }
         /// Opens a session for `monitor` (a Mutter connector) with that monitor's saved consent;
         /// None means the screen currently selected, or the only monitor.
-        fn open_inner(cancelled: Option<&std::sync::atomic::AtomicBool>, monitor: Option<&str>) -> Result<Self, super::PortalError> {
+        /// `fresh` asks the host again instead of restoring the saved consent (which stays saved).
+        /// `virtual_output` shares a KWin virtual output instead (privacy screen) with its own consent.
+        fn open_inner(cancelled: Option<&std::sync::atomic::AtomicBool>, monitor: Option<&str>, fresh: bool, virtual_output: bool) -> Result<Self, super::PortalError> {
             extern "C" fn is_cancelled(data: *mut c_void) -> i32 {
                 let cancelled = unsafe { &*(data as *const std::sync::atomic::AtomicBool) };
                 i32::from(cancelled.load(std::sync::atomic::Ordering::Acquire))
@@ -127,12 +152,20 @@ mod native {
             let (mut error, mut width, mut height) = (0, 0, 0);
             let directory = super::permissions::directory();
             let key = super::permissions::desktop_key();
-            let wanted = monitor.map(str::to_owned).or_else(crate::wayland::portal_monitor);
+            let wanted = if virtual_output { None } else { monitor.map(str::to_owned).or_else(crate::wayland::portal_monitor) };
+            let virtual_key = format!("{key}-virtual");
+            // One opener at a time: consent tokens are single-use, and two concurrent openers
+            // (privacy virtual-output switch and closure recovery after a quick reconnect) each
+            // consumed one and both failed, leaving no saved consent (seen live, KDE).
+            static OPENING: Mutex<()> = Mutex::new(());
+            let _opening = OPENING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             // Each monitor has its own consent; the desktop-wide key is the single-monitor one.
-            let token = directory.as_deref().and_then(|dir| {
-                wanted.as_deref().and_then(|name| super::permissions::take(dir, &super::permissions::monitor_key(name)))
-                    .or_else(|| super::permissions::take(dir, key))
-            }).and_then(|value| std::ffi::CString::new(value).ok());
+            let taken = directory.as_deref().filter(|_| !fresh).and_then(|dir| {
+                let take = |k: String| super::permissions::take(dir, &k).map(|v| (k, v));
+                if virtual_output { return take(virtual_key.clone()); }
+                wanted.as_deref().and_then(|name| take(super::permissions::monitor_key(name))).or_else(|| take(key.to_owned()))
+            });
+            let token = taken.as_ref().and_then(|(_, value)| std::ffi::CString::new(value.as_str()).ok());
             // The new token is saved once the granted monitor is known (after open).
             let mut cache: Option<String> = None;
             extern "C" fn save_token(token: *const libc::c_char, data: *mut c_void) {
@@ -144,8 +177,32 @@ mod native {
                 if result.is_err() { log::warn!("Portal permission cache callback failed"); }
             }
             let restore = token.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
-            let pointer = unsafe {
-                if let Some(cancelled) = cancelled {
+            // A failed open must not cost the saved consent: put the token back unless the
+            // portal handed out a new one. A stale token only makes the next open ask again.
+            let failed = |code: i32, cache: &Option<String>| {
+                if let (Some(dir), Some((k, value)), None) = (directory.as_deref(), taken.as_ref(), cache.as_ref()) {
+                    if super::permissions::save(dir, k, value).is_err() { log::warn!("Portal permission cache could not be restored"); }
+                }
+                super::PortalError { code }
+            };
+            #[allow(unused_mut)]
+            let mut pointer: *mut c_void = std::ptr::null_mut();
+            #[cfg(feature = "inproc-av")]
+            if !virtual_output && crate::video::native_engine_eligible(crate::video_select::selection().encoder, crate::video::NativeDisplayKind::Portal)
+                && !std::env::var("UU_PORTAL_DMABUF").is_ok_and(|v| v == "0") {
+                let callback = cancelled.map(|_| is_cancelled as extern "C" fn(*mut c_void) -> i32);
+                let cancel_data = cancelled.map_or(std::ptr::null_mut(), |value| value as *const _ as *mut c_void);
+                pointer = unsafe { uu_portal_open_persist_capture(
+                    restore, save_token, &mut cache as *mut _ as *mut c_void, callback, cancel_data, 1,
+                    &mut error, &mut width, &mut height,
+                ) };
+                if pointer.is_null() && error != 0 { return Err(failed(error, &cache)); }
+                if pointer.is_null() { log::warn!("Portal engine lacks DMA-BUF initialization; falling back to legacy initialization"); }
+            }
+            let pointer = if !pointer.is_null() { pointer } else { unsafe {
+                if virtual_output {
+                    uu_portal_open_virtual(restore, save_token, &mut cache as *mut _ as *mut c_void, &mut error, &mut width, &mut height)
+                } else if let Some(cancelled) = cancelled {
                     uu_portal_open_persist_cancellable(
                         restore, save_token, &mut cache as *mut _ as *mut c_void,
                         is_cancelled, cancelled as *const _ as *mut c_void,
@@ -154,23 +211,23 @@ mod native {
                 } else {
                     uu_portal_open_persist(restore, save_token, &mut cache as *mut _ as *mut c_void, &mut error, &mut width, &mut height)
                 }
-            };
-            let handle = NonNull::new(pointer).ok_or(super::PortalError { code: error })?;
+            } };
+            let Some(handle) = NonNull::new(pointer) else { return Err(failed(error, &cache)) };
             let (mut x, mut y) = (0, 0);
-            let granted = (unsafe { uu_portal_stream_position(handle.as_ptr(), &mut x, &mut y) } == 0)
+            let granted = (!virtual_output && unsafe { uu_portal_stream_position(handle.as_ptr(), &mut x, &mut y) } == 0)
                 .then(|| crate::wayland::portal_monitor_at(x, y)).flatten();
             if let (Some(dir), Some(token)) = (directory.as_deref(), cache.take()) {
                 let saved = match &granted {
+                    _ if virtual_output => virtual_key.clone(),
                     Some(name) => super::permissions::monitor_key(name),
                     None => key.to_owned(),
                 };
                 if super::permissions::save(dir, &saved, &token).is_err() { log::warn!("Portal permission cache could not be saved"); }
             }
             if wanted.is_some() && granted != wanted { log::warn!("Portal granted a different monitor than requested"); }
-            // A freshly opened session holds no lock-screen frame: only an observed lock (or a
-            // closed stream) must discard the cached frame. Starting "locked" cleared the first
-            // valid frame, and a static desktop sends no new one, so the viewer stayed black (#2).
-            Ok(Self { handle: Mutex::new(Handle(handle)), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), recovery: Mutex::new(Recovery::default()), size: pack(width, height).into(), monitor: Mutex::new(granted) })
+            // Keep a freshly granted compositor frame regardless of lock state. Discarding it
+            // before new damage can leave a static desktop permanently blank (#2).
+            Ok(Self { handle: Mutex::new(Handle(handle)), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), recovery: Mutex::new(Recovery::default()), size: pack(width, height).into(), monitor: Mutex::new(granted), virtual_output: virtual_output.into() })
         }
         /// Frame pixels of the monitor the stream currently follows.
         pub fn size(&self) -> (u32, u32) {
@@ -188,7 +245,7 @@ mod native {
         /// time GNOME asks on the host) and swap it in, so every holder of this Arc follows.
         pub fn switch_to(&self, connector: &str) -> Result<(), String> {
             if self.monitor().as_deref() == Some(connector) { return Ok(()); }
-            let replacement = Self::open_inner(None, Some(connector)).map_err(|error| error.to_string())?;
+            let replacement = Self::open_inner(None, Some(connector), false, false).map_err(|error| error.to_string())?;
             if replacement.monitor().as_deref() != Some(connector) {
                 return Err("Another monitor was shared; choose this monitor in the host dialog".into());
             }
@@ -203,11 +260,58 @@ mod native {
             drop(previous);
             Ok(())
         }
+        pub fn is_virtual(&self) -> bool { self.virtual_output.load(std::sync::atomic::Ordering::Acquire) }
+        /// Privacy screen: capture and input move to a KWin virtual output (on) or back to the
+        /// physical monitor (off). The caller enables physical outputs before switching back.
+        pub fn set_virtual(&self, on: bool) -> Result<(), String> {
+            if self.is_virtual() == on { return Ok(()); }
+            // Closure recovery would otherwise see the replaced share end and reopen the wrong source.
+            let _recovery = self.recovery.lock().map_err(|_| "Portal recovery lock poisoned")?;
+            let monitor = self.monitor();
+            // KDE restores a monitor share against the whole workspace while the virtual output
+            // exists (seen live: 3968x1280 = panel + virtual), so end the virtual share first.
+            if !on { self.end(); }
+            let replacement = Self::open_inner(None, monitor.as_deref(), false, on).map_err(|error| error.to_string())?;
+            let size = replacement.size();
+            let next = replacement.handle.into_inner().map_err(|_| "Portal session lock poisoned")?;
+            let previous = {
+                let mut handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+                self.size.store(pack(size.0, size.1), std::sync::atomic::Ordering::Release);
+                self.virtual_output.store(on, std::sync::atomic::Ordering::Release);
+                std::mem::replace(&mut *handle, next)
+            };
+            drop(previous);
+            log::info!("Portal capture source: virtual={on} size={}x{}", size.0, size.1);
+            Ok(())
+        }
         pub fn open() -> Result<Self, String> {
-            Self::open_inner(None, None).map_err(|error| error.to_string())
+            Self::open_inner(None, None, false, false).map_err(|error| error.to_string())
+        }
+        #[cfg(test)]
+        pub(crate) fn test_lock_watch(&mut self, locked: tokio::sync::watch::Receiver<Option<bool>>) {
+            self.locked = locked;
+        }
+        /// A consent saved before touch support restores keyboard and pointer only. Ask the host once
+        /// more (GNOME shows its share dialog; the consent timeout closes it) and swap the new session
+        /// in when it grants the touchscreen for this monitor at this size; until then, and on any
+        /// refusal, this session and its saved consent stay as they are. Ok(false): nothing to do.
+        pub fn upgrade_touch(&self) -> Result<bool, String> {
+            let available = self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_touch_available(handle.0.as_ptr()) } != 0);
+            if !available || self.touch_supported() { return Ok(false); }
+            log::info!("Portal touch consent: asking the host again for the touchscreen");
+            let monitor = self.monitor();
+            let replacement = Self::open_inner(None, monitor.as_deref(), true, self.is_virtual()).map_err(|error| error.to_string())?;
+            // The new consent is saved for whichever monitor was granted, so a later connection uses it.
+            if replacement.monitor() != monitor { return Err("another monitor was shared".into()); }
+            if !replacement.touch_supported() { return Err("the touchscreen was not granted".into()); }
+            self.check_geometry(&replacement).map_err(|error| error.to_string())?;
+            let next = replacement.handle.into_inner().map_err(|_| "Portal session lock poisoned")?;
+            let previous = std::mem::replace(&mut *self.handle.lock().map_err(|_| "Portal session lock poisoned")?, next);
+            drop(previous);
+            Ok(true)
         }
         pub fn open_cancellable(cancelled: &std::sync::atomic::AtomicBool) -> Result<Self, super::PortalError> {
-            Self::open_inner(Some(cancelled), None)
+            Self::open_inner(Some(cancelled), None, false, false)
         }
         pub fn recover(&self, cancelled: &std::sync::atomic::AtomicBool) -> Result<bool, super::PortalError> {
             use std::sync::atomic::Ordering;
@@ -232,7 +336,10 @@ mod native {
             };
             if alive { return Ok(false); }
 
-            let result = super::open_then_install(cancelled, || Self::open_cancellable(cancelled), |replacement| {
+            // The privacy screen's virtual share is reopened as itself, not as the monitor.
+            let virtual_output = self.is_virtual();
+            let monitor = self.monitor();
+            let result = super::open_then_install(cancelled, || Self::open_inner(Some(cancelled), monitor.as_deref(), false, virtual_output), |replacement| {
                 self.check_geometry(&replacement)?;
                 let replacement_handle = replacement.handle.into_inner().map_err(|_| super::PortalError { code: 3 })?;
                 let mut handle = self.handle.lock().map_err(|_| super::PortalError { code: 3 })?;
@@ -252,6 +359,7 @@ mod native {
         }
         pub fn pause(&self) {
             if let Ok(handle) = self.handle.lock() {
+                if unsafe { uu_portal_capture_alive(handle.0.as_ptr()) } != 0 { return; }
                 unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
                 self.was_locked.store(true, std::sync::atomic::Ordering::Release);
             } else {
@@ -259,7 +367,46 @@ mod native {
             }
         }
         pub fn capture(&self, frame: &mut [u8]) -> Result<(), String> {
-            self.capture_changed(frame, &mut None).map(|_| ())
+            let mut version = None;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            loop {
+                self.capture_changed(frame, &mut version)?;
+                // A one-shot snapshot must wait for SHM renegotiation after DMA initialization.
+                // Release the handle between attempts so input and recovery remain responsive.
+                if version != Some(super::FrameVersion(0, 0)) || std::time::Instant::now() >= deadline { return Ok(()); }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        pub fn disable_dmabuf(&self) {
+            if let Ok(handle) = self.handle.lock() { unsafe { uu_portal_dmabuf_disable(handle.0.as_ptr()) }; }
+        }
+        pub fn with_dmabuf<T>(&self, version: &mut Option<super::FrameVersion>,
+            encode: impl FnOnce(&super::DmaFrame, bool) -> Result<T, String>,
+        ) -> Result<super::DmaCapture<T>, String> {
+            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            unsafe { uu_portal_input_dispatch(handle.0.as_ptr()) };
+            // Hold the handle guard through GPU completion, so monitor swaps cannot invalidate a lease.
+            if unsafe { uu_portal_capture_alive(handle.0.as_ptr()) } == 0 {
+                return Ok(super::DmaCapture::Cpu);
+            }
+            let identity = handle.0.as_ptr() as usize;
+            let mut revision = version.filter(|v| v.0 == identity).map_or(0, |v| v.1);
+            let mut frame = super::DmaFrame::default();
+            match unsafe { uu_portal_dmabuf_acquire(handle.0.as_ptr(), &mut frame, &mut revision) } {
+                code @ (0 | 12) => {
+                    struct Lease(*mut c_void);
+                    impl Drop for Lease {
+                        fn drop(&mut self) { unsafe { uu_portal_dmabuf_release(self.0) }; }
+                    }
+                    let _lease = Lease(handle.0.as_ptr());
+                    let encoded = encode(&frame, code == 0)?;
+                    *version = Some(super::FrameVersion(identity, revision));
+                    Ok(super::DmaCapture::Frame(encoded))
+                },
+                10 => Ok(super::DmaCapture::Pending),
+                15 => Ok(super::DmaCapture::Blank),
+                code => Ok(super::DmaCapture::Unavailable(code)),
+            }
         }
         pub fn capture_changed(&self, frame: &mut [u8], version: &mut Option<super::FrameVersion>) -> Result<bool, String> {
             let (width, height) = self.size();
@@ -269,21 +416,18 @@ mod native {
             // Drain EIS even on a static desktop so pause/disconnect and sync
             // events are processed without waiting for remote input.
             unsafe { uu_portal_input_dispatch(handle.0.as_ptr()) };
-            let state = *self.locked.borrow();
-            if state != Some(false) {
-                // Unknown state (watcher not reported yet): show nothing but keep the cached frame.
-                if state == Some(true) {
+            if unsafe { uu_portal_capture_alive(handle.0.as_ptr()) } == 0 {
+                // A healthy source is forwarded regardless of lock state. Only an unavailable
+                // source is blanked; wait for unlock before reopening a compositor-closed session.
+                if *self.locked.borrow() != Some(false) {
                     unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
                     self.was_locked.store(true, std::sync::atomic::Ordering::Release);
+                    return Ok(blank_changed(frame, version));
                 }
-                return Ok(blank_changed(frame, version));
-            }
-            if self.was_locked.load(std::sync::atomic::Ordering::Acquire) {
-                // First unlocked capture after a real lock: drop frames captured while locked.
-                if self.take_lock_observation()? { unsafe { uu_portal_reset_frame(handle.0.as_ptr()) }; }
-                return Ok(blank_changed(frame, version));
-            }
-            if unsafe { uu_portal_capture_alive(handle.0.as_ptr()) } == 0 {
+                if self.was_locked.load(std::sync::atomic::Ordering::Acquire) {
+                    if self.take_lock_observation()? { unsafe { uu_portal_reset_frame(handle.0.as_ptr()) }; }
+                    return Ok(blank_changed(frame, version));
+                }
                 // Serialize recovery without making another capture worker hold
                 // the input mutex while waiting for this worker's Portal calls.
                 let mut recovery = match self.recovery.try_lock() {
@@ -305,7 +449,7 @@ mod native {
                         self.was_locked.store(true, std::sync::atomic::Ordering::Release);
                         false
                     }) { return Ok(None); }
-                    let replacement = match Self::open_inner(None, self.monitor().as_deref()) {
+                    let replacement = match Self::open_inner(None, self.monitor().as_deref(), false, self.is_virtual()) {
                         Ok(value) => value,
                         Err(error) => {
                             log::warn!("Portal capture recovery deferred: {error}");
@@ -327,6 +471,7 @@ mod native {
                 // Recheck lock state on the next capture before showing the new session.
                 return Ok(blank_changed(frame, version));
             } else {
+                self.was_locked.store(false, std::sync::atomic::Ordering::Release);
                 match self.recovery.try_lock() {
                     Ok(mut recovery) => recovery.retry_at = None,
                     Err(TryLockError::WouldBlock) => (),
@@ -372,6 +517,30 @@ mod native {
             let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
             super::check(unsafe { uu_portal_button(handle.0.as_ptr(), button, i32::from(pressed)) })
         }
+        /// Press and release a keysym through Notify*: the compositor picks the key and level of
+        /// the active layout. Under EIS (keycodes only) it fails before typing anything.
+        pub fn type_keysym(&self, symbol: u32) -> Result<(), String> {
+            if *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
+            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            super::check(unsafe { uu_portal_key(handle.0.as_ptr(), symbol, -1, 1) })?;
+            super::check(unsafe { uu_portal_key(handle.0.as_ptr(), symbol, -1, 0) })
+        }
+        /// Smooth scroll in stream pixels (positive scrolls down/right); `finish` ends the gesture.
+        pub fn scroll(&self, dx: f64, dy: f64, finish: bool) -> Result<(), String> {
+            if *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
+            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            super::check(unsafe { uu_portal_scroll(handle.0.as_ptr(), dx, dy, i32::from(finish)) })
+        }
+        /// The portal granted the touchscreen device type (requested where available).
+        pub fn touch_supported(&self) -> bool {
+            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_touch_supported(handle.0.as_ptr()) } != 0)
+        }
+        /// One finger in stream pixels: phase 0 down, 1 motion, 2 up.
+        pub fn touch(&self, phase: i32, x: f64, y: f64) -> Result<(), String> {
+            if phase != 2 && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
+            let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
+            super::check(unsafe { uu_portal_touch(handle.0.as_ptr(), phase, x, y) })
+        }
         pub fn key(&self, symbol: u64, pressed: bool) -> Result<(), String> {
             if pressed && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
             let symbol = u32::try_from(symbol).map_err(|_| "Invalid Portal keysym")?;
@@ -404,7 +573,7 @@ mod native {
                     was_locked: std::sync::atomic::AtomicBool::new(false),
                     recovery: Mutex::new(Recovery::default()),
                     size: pack(physical.0, physical.1).into(),
-                    monitor: Mutex::new(None),
+                    monitor: Mutex::new(None), virtual_output: false.into(),
                 }))
             }
 
@@ -671,6 +840,8 @@ impl PortalSession {
     pub fn monitor(&self) -> Option<String> { None }
     pub fn end(&self) {}
     pub fn switch_to(&self, _: &str) -> Result<(), String> { Err(error(15)) }
+    pub fn set_virtual(&self, _: bool) -> Result<(), String> { Err(error(15)) }
+    pub fn is_virtual(&self) -> bool { false }
 }
 #[cfg(not(all(target_os = "linux", feature = "portal")))]
 impl PortalSession {
@@ -691,8 +862,17 @@ impl PortalSession {
     pub fn pause(&self) {}
     pub fn capture(&self, _: &mut [u8]) -> Result<(), String> { Err(error(15)) }
     pub fn capture_changed(&self, _: &mut [u8], _: &mut Option<FrameVersion>) -> Result<bool, String> { Err(error(15)) }
+    pub fn disable_dmabuf(&self) {}
+    pub fn with_dmabuf<T>(&self, _: &mut Option<FrameVersion>, _: impl FnOnce(&DmaFrame, bool) -> Result<T, String>) -> Result<DmaCapture<T>, String> {
+        Ok(DmaCapture::Unavailable(-1))
+    }
     pub fn move_pointer(&self, _: f64, _: f64, _: bool) -> Result<(), String> { Err(error(15)) }
     pub fn button(&self, _: i32, _: bool) -> Result<(), String> { Err(error(15)) }
+    pub fn touch_supported(&self) -> bool { false }
+    pub fn scroll(&self, _: f64, _: f64, _: bool) -> Result<(), String> { Err(error(15)) }
+    pub fn upgrade_touch(&self) -> Result<bool, String> { Err(error(15)) }
+    pub fn type_keysym(&self, _: u32) -> Result<(), String> { Err(error(15)) }
+    pub fn touch(&self, _: i32, _: f64, _: f64) -> Result<(), String> { Err(error(15)) }
     pub fn key(&self, _: u64, _: bool) -> Result<(), String> { Err(error(15)) }
 }
 
@@ -702,6 +882,13 @@ pub fn permissions_directory() -> Option<std::path::PathBuf> { permissions::dire
 pub fn monitor_key(connector: &str) -> String { permissions::monitor_key(connector) }
 pub fn register(session: &Arc<PortalSession>) {
     *ACTIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(session));
+}
+/// Privacy screen: see `Session::set_virtual`. Restoring without a live session is a no-op;
+/// failures switching a live session must reach the controller so its recovery record survives.
+pub fn set_virtual_active(on: bool) -> Result<(), String> {
+    let session = ACTIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(std::sync::Weak::upgrade);
+    let Some(session) = session else { return if on { Err("Portal desktop unavailable".into()) } else { Ok(()) }; };
+    session.set_virtual(on)
 }
 pub fn switch_active(connector: &str) -> Result<(), String> {
     let session = ACTIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(std::sync::Weak::upgrade)
@@ -743,6 +930,11 @@ pub fn write_frames(session: Arc<PortalSession>, mut output: impl std::io::Write
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn privacy_restore_without_a_desktop_is_a_noop_but_enable_fails() {
+        assert!(super::set_virtual_active(false).is_ok());
+        assert_eq!(super::set_virtual_active(true).unwrap_err(), "Portal desktop unavailable");
+    }
     #[test]
     fn monitor_lines_parse_and_reject_unsafe_connectors() {
         let m = super::parse_monitors("eDP-1\t2880\t1800\t0\t0\t1\nHDMI-1\t2560\t1440\t1920\t0\t0\n../x\t1\t1\t0\t0\t0\n");

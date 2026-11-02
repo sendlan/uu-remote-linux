@@ -45,6 +45,7 @@ mod inproc_encoder;
 mod capture_setting;
 mod audio;
 mod virtual_audio;
+mod privacy_screen;
 mod system_actions;
 mod capability;
 mod protocol;
@@ -208,7 +209,7 @@ pub(crate) fn cli_pref_ok(which: &str, value: &str) -> bool {
     }
 }
 
-const SUBCOMMANDS: [&str; 17] = ["doctor", "show", "assist", "set-encoder", "set-codec", "desktop-input-probe", "virtual-audio-probe", "login", "unlock-check", "desktop-probe", "desktop-video-probe", "desktop-audio-probe", "wayland-capture",
+const SUBCOMMANDS: [&str; 20] = ["privacy-guard", "privacy-wallpaper", "privacy-screen-probe", "doctor", "show", "assist", "set-encoder", "set-codec", "desktop-input-probe", "virtual-audio-probe", "login", "unlock-check", "desktop-probe", "desktop-video-probe", "desktop-audio-probe", "wayland-capture",
     "wayland-input-probe", "wayland-text-probe", "clipboard-acceptance", "portal-acceptance"];
 
 /// Unknown arguments and illegal set-encoder / set-codec values exit 2 (never start a second host).
@@ -630,6 +631,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if login::run(gui).await.is_err() { std::process::exit(1); } // error already shown
         return Ok(());
     }
+    if std::env::args().nth(1).as_deref() == Some("privacy-guard") { std::process::exit(privacy_screen::guard_main()); }
+    if std::env::args().nth(1).as_deref() == Some("privacy-wallpaper") {
+        std::process::exit(privacy_screen::cover_main(&std::env::args().skip(2).collect::<Vec<_>>()));
+    }
+    if std::env::args().nth(1).as_deref() == Some("privacy-screen-probe") {
+        let screen = ScreenCapture::new()?;
+        if screen.portal.is_none() { return Err(std::io::Error::other("privacy screen needs the portal backend").into()); }
+        let _input = input::InputInjector::new(); // the privacy screen requires its uinput devices
+        let mode = if std::env::var("UU_PRIVACY_PROBE_WALLPAPER").as_deref() == Ok("1") { privacy_screen::Mode::Picture } else { privacy_screen::Mode::ScreenOff };
+        tokio::task::spawn_blocking(move || privacy_screen::probe(mode)).await?.map_err(std::io::Error::other)?;
+        drop(screen);
+        return Ok(());
+    }
+    privacy_screen::recover();
     virtual_audio::init();
     let _audio_cleanup=virtual_audio::Cleanup;
     log::info!("Starting uu-remote-linux host v{}...", env!("CARGO_PKG_VERSION"));
@@ -668,7 +683,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(not(target_os="linux"))]
         let _ = tokio::signal::ctrl_c().await;
-        if !assist_enabled { shutdown_input.shutdown(); virtual_audio::disable(); terminal::shutdown_all(); std::process::exit(0); }
+        if !assist_enabled { privacy_screen::shutdown(); shutdown_input.shutdown(); virtual_audio::disable(); terminal::shutdown_all(); std::process::exit(0); }
         let _ = signal_tx.send(true);
     });
     let mut assist = if assist_enabled { Some(assist::Assist::start(&mut shutdown, unified).await?) } else { None };
@@ -699,7 +714,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // One exit path for commands, signals, transport failures and UI failures.
     if let Some(session) = assist.as_mut() { session.allowed = false; }
     for (_, old) in webrtc_sessions.lock().await.drain() { close_peer(&old.pc).await; }
-    virtual_audio::disable(); input.shutdown(); terminal::shutdown_all();
+    privacy_screen::shutdown(); virtual_audio::disable(); input.shutdown(); terminal::shutdown_all();
     // Switching identity (signed in / out) restarts at once and the new identity republishes the same
     // device share: logout already withdrew it, and after a QR login the cloud moved it to the account
     // (a guest cancel then fails). Only a real stop withdraws here.
@@ -763,8 +778,8 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
     // One peer per viewer connection (desktop, file transfer, terminal...), keyed by ice_id.
     let mut next_capture_type: Option<(u64,crate::session_ice::SessionIce)> = None;
     let mut capture_types: HashMap<String, (u64,crate::session_ice::SessionIce)> = HashMap::new();
-    let mut mac_by_ice: HashMap<String, bool> = HashMap::new();
-    let mut next_mac = false;
+    let mut controller_by_ice: HashMap<String, crate::input::Controller> = HashMap::new();
+    let mut next_controller = crate::input::Controller::Other;
     // Tool peers ask here to become the desktop (capture_desktop on an existing connection, #99).
     let (desktop_requests, mut desktop_requested) = mpsc::unbounded_channel::<String>();
 
@@ -951,9 +966,9 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                             .and_then(|s| s.as_str())
                     );
                 }
-                SignalingEvent::ConnectRequest { capture_type, ice_id, transport, controller_mac } => {
-                    if mac_by_ice.len()>=32 { mac_by_ice.clear(); }
-                    match ice_id.clone() { Some(id) => { mac_by_ice.insert(id, controller_mac); } None => next_mac = controller_mac }
+                SignalingEvent::ConnectRequest { capture_type, ice_id, transport, controller } => {
+                    if controller_by_ice.len()>=32 { controller_by_ice.clear(); }
+                    match ice_id.clone() { Some(id) => { controller_by_ice.insert(id, controller); } None => next_controller = controller }
                     // Pending cloud credentials live only within this room; cap
                     // requests that never receive an offer rather than retain them.
                     if capture_types.len()>=32 { capture_types.clear(); }
@@ -984,8 +999,8 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                         let (capture_type,transport) = capture_types.remove(&ice).or_else(|| next_capture_type.take()).unwrap_or((1,crate::session_ice::SessionIce::default()));
                         // CaptureType: 0 unknown, 1 desktop, 2 window; 5 file transfer, 8 terminal, 9 port mapping.
                         let desktop = capture_type <= 2;
-                        let controller_mac = mac_by_ice.remove(&ice).unwrap_or(next_mac);
-                        if desktop { input.set_mac_controller(controller_mac); }
+                        let controller = controller_by_ice.remove(&ice).unwrap_or(next_controller);
+                        if desktop { input.set_controller(controller); }
                         log::info!("Offer for connection: capture_type={} desktop={} active_peers={}", capture_type, desktop, sessions.len());
                         // An expired NVENC failure is re-probed in the background. This offer keeps the cached encoder.
                         if desktop { video::warm_auto_probe(); video::check_ffmpeg_usable(); }
@@ -1017,7 +1032,7 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                         match WebRtcSession::new(session_capture, input.clone(), signaling_client.clone(), desktop, transport,
                             if desktop { portal_desktop.clone() } else { None }).await {
                             Ok(mut sess) => {
-                                sess.controller_mac = controller_mac;
+                                sess.controller = controller;
                                 if !desktop {
                                     let (requests, peer) = (desktop_requests.clone(), ice.clone());
                                     sess.on_desktop_request(move || { let _ = requests.send(peer.clone()); });
@@ -1084,7 +1099,7 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                         log::info!("Desktop request on a tool connection not supported with the Portal backend; open the desktop before port mapping");
                         continue;
                     }
-                    let controller_mac = peer.controller_mac;
+                    let controller = peer.controller;
                     let current = peer.desktop_capture();
                     // Same recovery as a desktop offer: the display may have come up or been resized after this peer.
                     let resized = current.init_error.is_none() && current.backend == desktop_backend::DesktopBackend::X11
@@ -1098,7 +1113,7 @@ async fn serve(mut capture: Arc<ScreenCapture>, input: Arc<InputInjector>, shutd
                         }
                     } else { None };
                     video::warm_auto_probe(); video::check_ffmpeg_usable();
-                    input.set_mac_controller(controller_mac);
+                    input.set_controller(controller);
                     input.bind_portal(screen.as_ref().map_or_else(|| sessions[&ice].capture.portal.clone(), |screen| screen.portal.clone()));
                     // One desktop at a time, as for a new desktop offer. Peers offered as desktops
                     // close; a promoted tool peer only stops its desktop and keeps its tools.

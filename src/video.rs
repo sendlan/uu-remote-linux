@@ -376,6 +376,9 @@ pub async fn ffmpeg_encoders() -> Option<Vec<&'static str>> {
 /// Installing FFmpeg clears the window line on the next check; no restart is needed.
 pub fn check_ffmpeg_usable() {
     if crate::desktop_backend::headless() { return; }
+    #[cfg(feature = "inproc-av")]
+    if native_engine_eligible(crate::video_select::selection().encoder, NativeDisplayKind::Portal)
+        && native_display_kind() == NativeDisplayKind::Portal { return; }
     tokio::spawn(async {
         static LAST_NOTICE: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
         let summary = crate::i18n::s("无法传输远程画面","Cannot stream the remote desktop");
@@ -517,7 +520,7 @@ pub(crate) async fn probe_encoder_idr(encoder: Encoder) -> crate::video_select::
 }
 
 /// True when `read_encoder_with` would open the in-process engine for this candidate
-/// on the selected desktop backend (X11 only; not Wayland, portal, KMS, or headless).
+/// on the selected backend (X11 hardware encoders, or Portal VAAPI).
 fn native_engine_would_run(encoder: Encoder) -> bool {
     native_engine_eligible(encoder, native_display_kind())
 }
@@ -697,7 +700,7 @@ async fn read_encoder(
     if encoder == Encoder::Cpu { return read_encoder_with(size,display,portal,latest,Encoder::Cpu,true,sequence,settings,idr,budget,selection).await; }
     #[cfg_attr(not(feature = "inproc-av"), allow(unused_mut))]
     let mut result = read_encoder_with(size,display.clone(),portal.clone(),latest.clone(),encoder,true,sequence.clone(),settings,idr.clone(),budget.clone(),selection).await;
-    // A failed native NVENC session (old driver, unsupported mode) still leaves FFmpeg's NVENC process pipeline.
+    // A failed native session still leaves the matching FFmpeg hardware pipeline.
     #[cfg(feature = "inproc-av")]
     if let Err(error) = &result {
         if !latest.is_closed() && native_inproc(&display, portal.is_some(), encoder) && x11_resized(&display, portal.is_some(), size).is_none() {
@@ -722,18 +725,19 @@ fn x11_resized(display: &str, portal: bool, size: (u32, u32)) -> Option<(u32, u3
     crate::capture::x11_size().filter(|current| *current != size)
 }
 
-/// Same predicate `native_inproc` uses: X11 only, and the in-process engine is selected.
+/// Same predicate `native_inproc` uses for backend/encoder eligibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeDisplayKind { X11, Wayland, Portal, Kms, None }
 
 pub(crate) fn native_engine_eligible(encoder: Encoder, kind: NativeDisplayKind) -> bool {
     #[cfg(feature = "inproc-av")]
-    { kind == NativeDisplayKind::X11 && crate::inproc_encoder::selected(encoder) }
+    { (kind == NativeDisplayKind::X11 || (kind == NativeDisplayKind::Portal && encoder == Encoder::Vaapi))
+        && crate::inproc_encoder::selected(encoder) }
     #[cfg(not(feature = "inproc-av"))]
     { let _ = (encoder, kind); false }
 }
 
-/// The native in-process NVENC path serves X11 only (not Wayland/KMS capture or a portal session).
+/// NVENC serves X11; VAAPI also accepts frames from the existing Portal session.
 #[cfg(feature = "inproc-av")]
 fn native_inproc(display: &str, portal: bool, encoder: Encoder) -> bool {
     native_engine_eligible(encoder, display_kind(display, portal))
@@ -751,7 +755,7 @@ fn display_kind(display: &str, portal: bool) -> NativeDisplayKind {
 #[cfg(feature = "inproc-av")]
 async fn read_inprocess(
     config: crate::inproc_encoder::Config, latest: mpsc::Sender<Arc<CompleteFrame>>,
-    sequence: Arc<std::sync::atomic::AtomicU64>, idr: Arc<AtomicBool>, budget: Arc<Semaphore>,
+    sequence: Arc<std::sync::atomic::AtomicU64>, idr: Arc<AtomicBool>, budget: Arc<Semaphore>, source: (usize, u64),
 ) -> Result<(), String> {
     let codec = config.codec;
     let (units_tx, mut units) = mpsc::channel::<crate::inproc_encoder::EncodedUnit>(4);
@@ -767,7 +771,7 @@ async fn read_inprocess(
     let mut gate = DependencyGate::default();
     while let Some(unit) = units.recv().await {
         let sequence = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        gate.submit(&latest, Arc::new(CompleteFrame { source_generation: 0, source_id: 0, codec, sequence, completed_at: unit.completed_at, data: unit.data, _permit: Some(unit.permit) }));
+        gate.submit(&latest, Arc::new(CompleteFrame { source_generation: source.1, source_id: source.0, codec, sequence, completed_at: unit.completed_at, data: unit.data, _permit: Some(unit.permit) }));
         if latest.is_closed() { break; }
     }
     // Dropping the receiver also unblocks the encoder if it is waiting to send.
@@ -834,6 +838,7 @@ async fn read_encoder_with(
     if allow_inproc && x11_region.is_none() && native_inproc(&display, portal.is_some(), encoder) {
         let max_kbps = settings.max_kbps().unwrap_or(30_000) as i64;
         let config = crate::inproc_encoder::Config {
+            portal: portal.clone(),
             display: display.clone(), input: size, output: settings.output, fps: u32::from(settings.fps),
             gop: gop_frames(settings.fps, true) as u32, cq: settings.cq() as u32,
             target_bps: settings.max_kbps().map_or(16_000, |k| i64::from(k) * 3 / 4) * 1000,
@@ -843,7 +848,7 @@ async fn read_encoder_with(
         log::info!("Desktop encoder: display={} source={}x{} output={:?} fps={} cq={} maxrate={}k encoder={} source={} pipeline=in-process",
             display,size.0,size.1,settings.output,settings.fps,config.cq,max_kbps,encoder.name_for(settings.codec),
             crate::video_select::encoder_source_label(selection.encoder_source));
-        return read_inprocess(config, latest, sequence, idr, budget).await;
+        return read_inprocess(config, latest, sequence, idr, budget, (settings.source_id, settings.source_generation)).await;
     }
     let source_size = size;
     let size = format!("{}x{}", size.0, size.1);
@@ -1198,6 +1203,8 @@ pub async fn stream_desktop_at(pc: Arc<RTCPeerConnection>, track: Arc<crate::vid
         }
     };
     let mut reader = EncoderTask(tokio::spawn(open(size, live_selection, current)));
+    // The privacy screen swaps the portal stream to a virtual output that can have another size.
+    let mut portal_size = portal.as_ref().map(|p| p.size());
     let mut previous = None;
     let mut timeline = RtpTimeline { fps: u64::from(current.fps), ..Default::default() };
     let mut settings_open = true;
@@ -1299,7 +1306,19 @@ pub async fn stream_desktop_at(pc: Arc<RTCPeerConnection>, track: Arc<crate::vid
                 }
                 return result;
             },
-            _ = health.tick() => { if transport_closed(&pc) { return Ok(()); } },
+            _ = health.tick() => {
+                if transport_closed(&pc) { return Ok(()); }
+                let now = portal.as_ref().map(|p| p.size());
+                if now != portal_size {
+                    log::info!("Portal stream size changed; restarting capture");
+                    portal_size = now;
+                    reader.0.abort();
+                    let _ = (&mut reader.0).await;
+                    while receiver.try_recv().is_ok() {}
+                    idr.store(true, std::sync::atomic::Ordering::Relaxed);
+                    reader.0 = tokio::spawn(open(size, live_selection, current));
+                }
+            },
             changed = settings.changed(), if settings_open => {
                 if changed.is_err() { settings_open = false; }
                 continue;
@@ -1513,6 +1532,18 @@ mod tests {
         } else {
             assert!(!x11);
             assert_eq!(stored, exit);
+        }
+    }
+
+    #[test]
+    fn portal_native_pipeline_only_accepts_vaapi() {
+        assert!(!native_engine_eligible(Encoder::Cpu, NativeDisplayKind::Portal));
+        assert!(!native_engine_eligible(Encoder::Nvenc, NativeDisplayKind::Portal));
+        #[cfg(feature = "inproc-av")]
+        assert_eq!(native_engine_eligible(Encoder::Vaapi, NativeDisplayKind::Portal),
+            crate::inproc_encoder::selected(Encoder::Vaapi));
+        for kind in [NativeDisplayKind::Wayland, NativeDisplayKind::Kms, NativeDisplayKind::None] {
+            assert!(!native_engine_eligible(Encoder::Vaapi, kind));
         }
     }
 

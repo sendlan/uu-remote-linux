@@ -19,6 +19,13 @@
 <p align="center"><img src="docs/images/main-window.png" width="620" alt="Linux 主机主窗口：远程协助与账号"></p>
 <p align="center"><sub>Linux 被控端主窗口：远程协助与账号（设备 ID、验证码和账号已打码）</sub></p>
 
+## 外观 / Appearance
+
+在控制端的 **设置 → 常规 → 外观**，或主机 / 工具窗口的齿轮设置按钮中选择 **跟随系统 / 浅色 / 深色**（默认跟随系统）。
+选择保存在 `$XDG_CONFIG_HOME/uuremote/theme`（默认 `~/.config/uuremote/theme`）。
+
+<p align="center"><img src="docs/images/appearance-light.png" width="360" alt="浅色界面（虚构设备）"> <img src="docs/images/appearance-dark.png" width="360" alt="深色界面（虚构设备）"></p>
+
 ## 语言 / Language
 
 启动时按以下顺序确定界面语言：
@@ -90,7 +97,9 @@ GNOME Wayland 的 Portal/EIS 路径已在 Ubuntu 26.04、GNOME 50、单屏 4K/20
 
 Wayland 下的限制：默认采集单屏，Hyprland 可按上文启用切屏；分辨率固定；Hyprland 原生后端默认使用双缓冲流水线 shm screencopy，控制端帧率设置会同步到采集节拍和编码器，但实际帧率仍受合成器、渲染和读回速度限制（旧串行路径在 2560x1600 曾测得约 16～22 帧；流水线只在虚拟机里测量过，不代表实机保证）；portal 后端暂不支持动态分辨率；GNOME 的屏幕唤醒与锁屏恢复见下；剪贴板只在控制端的远控窗口处于前台时同步。
 
-**Wayland 手机输入法打字与剪贴板**：Wayland 下手机端输入法提交的文字（`text_input`）优先通过虚拟键盘空闲键码上屏；在 Portal（GNOME / KDE）或键码耗尽的环境下，自动通过「写系统剪贴板 + 触发 `Shift+Insert`（或 `UU_WAYLAND_PASTE_KEY=ctrl_v`）」兜底粘贴。**注意**：此兜底过程会覆盖被控端原有的剪贴板内容，且会被双向同步回传到控制端剪贴板；设置 `UU_WAYLAND_TEXT=0` 可完全关闭 Wayland 文字输入及该粘贴兜底。
+**手机控制端触控（GNOME）**：Android/iOS 控制端在触控模式下把手指当作左键拖动发送，在桌面上会选中文字。Portal 后端下被控端按每次按下判断：0.45 秒内移动超过几个像素即平滑滚动（`NotifyPointerAxis`，内容跟随手指，终端里同样有效，最后一个事件让客户端可以惯性滑动）；按住不动则像鼠标拖动一样选中；短按为点击。此模式无需触摸屏授权。`UU_TOUCH_INPUT=touch` 改为把拖动按单指触控在 Portal 触摸屏上重放，门户提供触摸屏设备类型时被控端会一并申请；此前保存的授权只恢复键盘和指针，因此第一次拖动时会在后台再申请一次（GNOME 共享对话框，手机画面中也能看到，授权超时后自动关闭），同意同一显示器后无需重连即切换为触控。不会预先删除已保存的授权，每次运行最多申请一次。`UU_TOUCH_INPUT=0` 保持鼠标拖动。
+
+**Wayland 手机输入法打字与剪贴板**：Wayland 下手机端输入法提交的文字（`text_input`）优先通过虚拟键盘空闲键码上屏；GNOME（Portal）下，当前输入源为拉丁 xkb 布局时，可打印 ASCII 直接以 keysym 输入（由 Mutter 选择按键和 Shift 层级）；其他文字、KDE 以及键码耗尽的环境自动通过「写系统剪贴板 + 触发 `Shift+Insert`（或 `UU_WAYLAND_PASTE_KEY=ctrl_v`）」兜底粘贴。VTE 终端的 `Shift+Insert` 粘贴的是 PRIMARY 选区，因此 ASCII 改为直接输入。**注意**：此兜底过程会覆盖被控端原有的剪贴板内容，且会被双向同步回传到控制端剪贴板；设置 `UU_WAYLAND_TEXT=0` 可完全关闭 Wayland 文字输入及该粘贴兜底。
 
 GNOME 缩放桌面在使用 Portal 原生键鼠时，若支持 `ConnectToEIS` 和屏幕 `mapping_id`，通过同一授权会话的 EIS 接口注入输入，按匹配的区域与实际帧尺寸分别映射横纵坐标，没有固定分辨率或缩放倍率，可避免 `NotifyPointerMotionAbsolute` 在缩放时拒绝坐标。Portal 构建需要 libei ≥ 1.1。缺少 EIS 支持时保留旧输入路径及其既有缩放限制；其他初始化错误会明确报告并触发会话恢复。EIS 连接成功后全部输入统一使用 EIS。只采集画面或使用 uinput 时不会初始化 EIS；缺少可选的逻辑尺寸也不阻断采集。键盘沿用项目现有的 Windows VK → evdev 映射。恢复时保持编码器的采集帧尺寸不变，允许缩放后的逻辑尺寸变化。GNOME 显示配置变化后，已推流的 Portal 采集若持续「暂停且无有效格式」，会在关联通知后的 200 毫秒宽限结束后提前进入现有恢复流程；正常重协商恢复会取消提前判定，连续通知不会推迟同次异常的判定。未收到相关通知时保留五秒兜底；静态画面或有效格式下的暂停不会触发恢复。Ubuntu 26.04、GNOME Wayland 单屏 3840×2160 已实测保持连接切换 200%→166.67%→200%，恢复后画面持续更新且鼠标可控制全屏；切换期间会短暂停顿、黑屏后恢复，五秒是兜底判定阈值，并非总恢复时间。提前恢复的测量结果和验证范围见 [#35](../../pull/35)。此路径仍需实机验证锁屏恢复；多屏、连接中改变分辨率及旋转/镜像变换不属于本次修复范围。 捕获设置协议仍为版本 4：对客户端上报的分辨率统一使用像素坐标、DPR 为 1；Portal 逻辑尺寸仅用于本地输入映射。
 
@@ -127,7 +136,7 @@ niri 会话通过 `niri msg --json outputs` 枚举已启用的显示器。普通
 | 真彩（4:4:4） | 支持（v0.1.15）：NVENC / libx264 的默认 FFmpeg 管线输出 H.264 High 4:4:4；`inproc-av` 原生 NVENC 输出 H.264 High 4:4:4 / HEVC FRExt；VAAPI 管线仍为 4:2:0，并如实回报给客户端 |
 | HDR | 未实现 |
 | 超级屏 / 虚拟显示器 | 未实现 |
-| 被控端防窥模式 | 未实现 |
+| 被控端防窥模式 | 实验性，仅 KDE Plasma Wayland（portal）；Mac 4.43.0 已验证不启用、隐私屏保、关闭显示屏三种状态回显，见 [docs/privacy-screen.md](docs/privacy-screen.md) |
 | 麦克风（控制端声音传到被控端） | 未实现（需要虚拟声卡） |
 | 魔兽世界排队提醒等插件 | 不支持，会明确告诉客户端「无插件」 |
 | Linux 系统登录界面 | 还不支持控制开机后的系统登录界面（还没有人登录 Linux 桌面时）；这种情况可以用无头模式或虚拟桌面（见下文）。注意：这里说的是 Linux 系统登录，**不登录 UU 账号**现在可以通过「远程协助」使用 |
@@ -184,6 +193,8 @@ sudo apt install libwayland-dev libxkbcommon-dev wl-clipboard
 sudo apt install libglib2.0-dev libpipewire-0.3-dev libei-dev
 # 可选：inproc-av 的 VAAPI/DRI3 引擎编译所需（libva 本体运行时加载）
 sudo apt install libva-dev libgbm-dev libx11-xcb-dev libxcb-dri3-dev libxcb-damage0-dev
+# inproc-av 的进程内音频采集与 Opus 编码
+sudo apt install libpulse-dev libopus-dev
 ```
 
 - 需要 Rust 工具链（<https://rustup.rs>）。
@@ -200,6 +211,9 @@ cargo build --release --features wayland,portal   # + GNOME/KDE Wayland
 
 控制端的 `viewer-ffmpeg` 只支持 **FFmpeg 6.x**（`pkg-config --modversion libavcodec` 为 60.x）；FFmpeg 7 及以上会在依赖 `ffmpeg-sys-next` 里报 `avfft.h file not found`（#63）。
 服务端可选的 `--features inproc-av` 是 X11 下的进程内硬件编码：不链接 FFmpeg 开发库，NVENC 运行时加载 NVIDIA 驱动库（`libcuda.so.1`、`libnvidia-encode.so.1`，需要支持 NVENC API 12.1 的驱动，530 及以上），VAAPI 运行时加载 `libva.so.2`/`libva-drm.so.2`。截屏与编码尺寸一致时 NVENC 直接读取 XShm 缓冲，省去一次主机到显存的拷贝；VAAPI 在同一特性下也进程内运行（DRI3 DMA-BUF 零拷贝，无 DRI3 时 XShm 上传，VPP 转 NV12 后送 VCN，支持 H.264/H.265）。CPU 编码或 `UU_CAPTURE=grab` 仍走外部 FFmpeg 进程；进程内硬件编码启动失败时先回退到对应的 FFmpeg 进程管线，再回退到 CPU。默认构建和预编译包都不需要该特性。
+
+GNOME/KDE Wayland 的进程内编码用 `cargo build --release --features wayland,portal,inproc-av` 配合 `set-encoder vaapi` 启用，目前仅支持 Portal + VAAPI。
+`UU_PORTAL_DMABUF=0` 禁用 DMA-BUF、改用进程内上传；`UU_VIDEO_PIPELINE=process` 恢复外部 FFmpeg 管线。
 
 ### 3. 登录
 
@@ -262,6 +276,8 @@ sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput
 
 `uaccess` 只把权限给当前坐在这台机器前的登录用户。`UU_INPUT_BACKEND=uinput|native` 可以强制指定后端。
 X11 默认继续用 XTest，因为它能正确处理网络延迟下按住不放的按键。
+
+uinput 的 ASCII 文本映射依赖 X11/XWayland XKB；不可映射的文字保留原有文字输入/剪贴板路径。
 
 ## 远程协助与主窗口（实验性）
 
@@ -505,6 +521,8 @@ xfce4-session xfce4-panel xfdesktop xfwm4 gnome-terminal`。
 
 ## 实验性原生控制端（uuremote-viewer）
 
+[SDL 控制端视频调度说明](docs/viewer-video-scheduling.md)。
+
 `uuremote-viewer` 是 Linux 上的**控制端**：用你的 UU 账号连接并控制其他设备（官方 Windows / Mac 被控端，或本项目的 Linux 主机），
 也可以凭对方的设备 ID 和验证码发起远程协助。它是实验性功能，与主机 `uuremote-server` 相互独立，默认主机构建和行为不变。
 
@@ -512,7 +530,8 @@ xfce4-session xfce4-panel xfdesktop xfwm4 gnome-terminal`。
 `ffmpeg` 命令；SDL 桌面窗口直接同步文本剪贴板（Wayland/X11），无需额外剪贴板工具；终端功能需要本机终端程序（可用 `TERMINAL` 指定）。
 从源码构建：`sudo apt install libsdl2-dev`，然后 `cargo build --release --locked --features native-viewer,viewer-sdl --bin uuremote-viewer`。
 
-SDL 剪贴板复用桌面窗口，避免 GNOME Wayland 上临时窗口引起的 Dock 跳动（#37）。仅在桌面窗口获得焦点时同步，
+SDL 剪贴板复用桌面窗口，避免 GNOME Wayland 上临时窗口引起的 Dock 跳动（#37）。niri 改用支持 data-control 的
+`wl-clipboard`，不需要桌面窗口保持焦点；其他 SDL 后端仅在桌面窗口获得焦点时同步。
 保留 30 KiB 文本上限；跳过不含支持的文本格式的本地选择，空文本的识别取决于 SDL2 后端。不带 SDL 的构建保留命令后端。
 SDL2 同步读取选择内容，慢速的剪贴板提供者可能暂时阻塞窗口，桥接超时无法中断该原生调用。
 GNOME 与官方 Mac 被控端的双向剪贴板尚未验证通过；此修改不解决被控端兼容问题。
@@ -544,6 +563,8 @@ GNOME 与官方 Mac 被控端的双向剪贴板尚未验证通过；此修改不
   以 CaptureSettingSync 回报为准。两种色度均由 FFmpeg 转为 RGB24 显示。
 - 按被控端原始分辨率解码，窗口缩放使用线性过滤；被控端分辨率变化时自动重启解码器。`UU_VIEWER_SIZE=WxH` 可改为固定的留黑边画布。
 
+SDL 远程画面窗口关闭本地输入法的文本组合，按物理键转发；输入中文时请使用被控端的输入法及其中英切换键（例如 Shift）。
+
 Mac 目标使用 macOS 原生键码，Windows / Linux 目标保留 Windows VK。键盘按物理键位置转发，不自动把 Ctrl 改成 Command；
 控制 Mac 时，PC 键盘的 Super / Win 键对应 Command。仅接受已验证的目标平台值 1（Windows / 本项目 Linux 主机）和 4（Mac），
 未知值会报错，不猜测键码。账号连接缺少平台字段时查询目标设备；远程协助必须由连接响应提供平台。只看模式不需要此识别。
@@ -565,3 +586,11 @@ Mac 目标使用 macOS 原生键码，Windows / Linux 目标保留 Windows VK。
 | Wayland 下的桌面窗口与剪贴板 | — | — | ✅ Hyprland、KDE；GNOME 窗口正常，剪贴板已于 v0.2.3 改为 SDL 直连（#37，最终版本未重新实机验收） |
 
 「—」表示尚未测试。重启/关机只应在可以重启的机器上使用。**未实测**：官方被控端的 H.265 / 4:4:4、多显示器。日志只记录字段号、大小和状态，不记录键盘、剪贴板、文件内容、验证码或凭据。
+
+### 原生手柄与震动（实验性）
+
+SDL 控制端可通过现有桌面 CONTROL 通道向 Windows 被控端转发一个映射手柄，并接收普通双路震动。
+默认关闭：`UU_VIEWER_NATIVE_GAMEPAD=1` 启用手柄，`UU_VIEWER_NATIVE_RUMBLE=0` 可独立关闭震动。
+不支持 Guide 键、多手柄和自适应扳机；休眠、强制退出及断网恢复尚未全面验证。
+一名报告用户在一组 Windows + Steam Deck 上测试了输入、手机热点、重连与震动。
+详见[协议证据、设计与限制](docs/deckpad-native-gamepad.md)。
