@@ -39,16 +39,19 @@ jobs:
       - name: Detect latest upstream release
         id: detect
         run: |
-          # API 失败必须响亮报错：静默 skip 会让 fork 停在旧版本数天无人察觉
-          UP_TAG=$(curl -sf "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" \
-            || { echo "::error::upstream releases API failed (rate-limited?)"; exit 1; } \
-            | jq -r '.tag_name // empty')
+          # API 失败必须响亮报错：静默 skip 会让 fork 停在旧版本数天无人察觉。
+          # 注意不要写 `UP_TAG=$(curl ... || {...} | jq)`：| 优先于 ||，
+          # curl 成功时 jq 根本不执行，整个 JSON 会成为 UP_TAG。
+          RESP=$(curl -sf "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest") \
+            || { echo "::error::upstream releases API failed (rate-limited?)"; exit 1; }
+          UP_TAG=$(printf '%s' "$RESP" | jq -r '.tag_name // empty')
           echo "up_tag=$UP_TAG" >> "$GITHUB_OUTPUT"
-          # 查 fork 远端（不是本地 refs——上游 tag 已被 fetch 进本地，查本地恒命中）
+          # 已同步判定看提交是否已在 main 里，而不是 tag 是否存在——
+          # fork 上可能残留指向上游提交的同名 tag（fetch upstream --tags 曾推上去过）
           if [ -z "$UP_TAG" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "upstream has no releases"
-          elif git ls-remote --exit-code origin "refs/tags/$UP_TAG" >/dev/null 2>&1; then
+          elif git merge-base --is-ancestor "${UP_TAG}^{commit}" main 2>/dev/null; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "already synced: $UP_TAG"
           else
