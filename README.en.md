@@ -25,6 +25,14 @@
 
 ## Appearance / 外观
 
+Launcher icons use the system icon theme instead of emoji glyphs, so they do not depend on emoji font coverage.
+
+Signed-in graphical hosts report the system wallpaper for disconnected device cards in official clients
+(no desktop-window screenshot). GNOME/Cinnamon, KDE, Xfce and Omarchy on Hyprland are supported (following the current wallpaper); checks run every 60 seconds
+and unchanged content is not uploaded again. Other desktops can set `UU_WALLPAPER=/absolute/path/image.png`
+(PNG/JPEG/WebP). Set `UU_WALLPAPER_UPLOAD=0` to disable; guest and headless hosts skip reporting.
+See [protocol evidence and limitations](docs/wallpaper-protocol.md).
+
 Choose **System / Light / Dark** (default: System) in the viewer's **Settings → General → Appearance**, or via the gear settings button in host / tool windows.
 The choice is saved to `$XDG_CONFIG_HOME/uuremote/theme` (default `~/.config/uuremote/theme`).
 
@@ -151,7 +159,7 @@ On niri, `niri msg --json outputs` enumerates enabled monitors. Normal and 90/18
 | True color (4:4:4) | Supported (v0.1.15): the default FFmpeg pipeline with NVENC / libx264 encodes H.264 High 4:4:4; `inproc-av` native NVENC encodes H.264 High 4:4:4 / HEVC FRExt; VAAPI stays 4:2:0 and reports that to the client |
 | HDR | Not implemented |
 | Super screen / virtual display | Not implemented |
-| Privacy screen on the host | Experimental, KDE Plasma Wayland (portal) only; off, picture and screen-off status labels verified with Mac 4.43.0; see [docs/privacy-screen.md](docs/privacy-screen.md) |
+| Privacy screen on the host | Experimental, KDE Plasma Wayland (portal) only; off, picture and screen-off status labels verified with Mac 4.43.0; `UU_PRIVACY_AUTO=picture` / `screen-off` enables it automatically on desktop connect; see [docs/privacy-screen.md](docs/privacy-screen.md) |
 | Microphone (viewer audio played on the host) | Not implemented (needs a virtual sound card) |
 | Plugins such as the WoW queue notifier | Not supported; the client is told that no plugins exist |
 | Linux login screen | The system login screen (before anyone logs in to the Linux desktop) cannot be controlled yet; use headless mode or a virtual desktop (see below). This is about the Linux login: **without a UU account** the host can now be used through remote assistance |
@@ -458,6 +466,7 @@ flowchart LR
 
 ## Security and privacy
 
+- By default, signed-in graphical hosts upload the current wallpaper image to UU's file service for device-card backgrounds. Set `UU_WALLPAPER_UPLOAD=0` to disable this upload.
 - Logs never contain keystrokes, terminal text, clipboard contents, file contents, passwords or tokens.
 - For auto unlock the password is stored in the **viewer** (the official client). The host only checks it
   once with PAM; it is never written to disk or logs.
@@ -603,6 +612,8 @@ separate from the host `uuremote-server`; the default host build and behaviour a
 `libsdl2-2.0-0`) and the `ffmpeg` command; SDL desktop windows synchronize text clipboard directly on Wayland/X11 without extra clipboard tools; the terminal needs a local
 terminal emulator (`TERMINAL` selects one). From source: `sudo apt install libsdl2-dev`, then
 `cargo build --release --locked --features native-viewer,viewer-sdl --bin uuremote-viewer`.
+
+Key combinations use the left/right modifier state attached to each SDL key event. Focus loss releases remote keys; after focus returns, the next non-modifier key restores any still-held Shift/Ctrl/Alt/Win (Command on Mac). This is built in, with no adapter or setting required.
 
 SDL clipboard access reuses the desktop window to avoid temporary-window Dock churn on GNOME Wayland (#37).
 On niri, data-control-capable `wl-clipboard` is used instead, so synchronization does not require window focus.

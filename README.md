@@ -21,6 +21,10 @@
 
 ## 外观 / Appearance
 
+启动器图标使用系统主题的符号图标，避免缺少 emoji 字体时显示方框。
+
+已登录的图形主机会上报系统壁纸，供官方客户端的设备卡片在未连接时显示背景图（不是桌面窗口截图）。支持 GNOME/Cinnamon、KDE、Xfce 和 Hyprland 下的 Omarchy（自动跟随当前壁纸）；每 60 秒检查一次，内容不变则不重复上传。其他桌面可用 `UU_WALLPAPER=/绝对路径/图片.png` 指定 PNG/JPEG/WebP；`UU_WALLPAPER_UPLOAD=0` 关闭。访客和无桌面模式跳过上报。协议依据与限制见 [设备壁纸上报](docs/wallpaper-protocol.md)。
+
 在控制端的 **设置 → 常规 → 外观**，或主机 / 工具窗口的齿轮设置按钮中选择 **跟随系统 / 浅色 / 深色**（默认跟随系统）。
 选择保存在 `$XDG_CONFIG_HOME/uuremote/theme`（默认 `~/.config/uuremote/theme`）。
 
@@ -136,7 +140,7 @@ niri 会话通过 `niri msg --json outputs` 枚举已启用的显示器。普通
 | 真彩（4:4:4） | 支持（v0.1.15）：NVENC / libx264 的默认 FFmpeg 管线输出 H.264 High 4:4:4；`inproc-av` 原生 NVENC 输出 H.264 High 4:4:4 / HEVC FRExt；VAAPI 管线仍为 4:2:0，并如实回报给客户端 |
 | HDR | 未实现 |
 | 超级屏 / 虚拟显示器 | 未实现 |
-| 被控端防窥模式 | 实验性，仅 KDE Plasma Wayland（portal）；Mac 4.43.0 已验证不启用、隐私屏保、关闭显示屏三种状态回显，见 [docs/privacy-screen.md](docs/privacy-screen.md) |
+| 被控端防窥模式 | 实验性，仅 KDE Plasma Wayland（portal）；Mac 4.43.0 已验证不启用、隐私屏保、关闭显示屏三种状态回显；`UU_PRIVACY_AUTO=picture` / `screen-off` 可在桌面连接时自动开启，见 [docs/privacy-screen.md](docs/privacy-screen.md) |
 | 麦克风（控制端声音传到被控端） | 未实现（需要虚拟声卡） |
 | 魔兽世界排队提醒等插件 | 不支持，会明确告诉客户端「无插件」 |
 | Linux 系统登录界面 | 还不支持控制开机后的系统登录界面（还没有人登录 Linux 桌面时）；这种情况可以用无头模式或虚拟桌面（见下文）。注意：这里说的是 Linux 系统登录，**不登录 UU 账号**现在可以通过「远程协助」使用 |
@@ -402,6 +406,7 @@ flowchart LR
 
 ## 安全与隐私
 
+- 已登录的图形主机默认会将当前壁纸图片上传到 UU 的文件服务，供设备卡片显示背景；可用 `UU_WALLPAPER_UPLOAD=0` 关闭上传。
 - 日志不记录键盘输入、终端内容、剪贴板内容、文件内容、密码和令牌。
 - 自动解锁的密码保存在**控制端**（官方客户端）里，被控端只拿来做一次 PAM 校验，不落盘、不写日志。
 - 能连上这台机器的，只有登录了同一个 UU 账号的设备。请保管好你的 UU 账号。
@@ -529,6 +534,8 @@ xfce4-session xfce4-panel xfdesktop xfwm4 gnome-terminal`。
 **获取**：Release 包从本版本起附带 `uuremote-viewer`（x86_64）。运行时需要 GTK3、SDL2（Ubuntu/Debian：`libsdl2-2.0-0`）和
 `ffmpeg` 命令；SDL 桌面窗口直接同步文本剪贴板（Wayland/X11），无需额外剪贴板工具；终端功能需要本机终端程序（可用 `TERMINAL` 指定）。
 从源码构建：`sudo apt install libsdl2-dev`，然后 `cargo build --release --locked --features native-viewer,viewer-sdl --bin uuremote-viewer`。
+
+组合键使用 SDL 按键事件携带的左右修饰键状态；窗口失焦时释放远端按键，重新聚焦后的下一次普通按键会恢复仍按住的 Shift/Ctrl/Alt/Win（Mac 为 Command）。此行为内置，无需适配库或开关。
 
 SDL 剪贴板复用桌面窗口，避免 GNOME Wayland 上临时窗口引起的 Dock 跳动（#37）。niri 改用支持 data-control 的
 `wl-clipboard`，不需要桌面窗口保持焦点；其他 SDL 后端仅在桌面窗口获得焦点时同步。
