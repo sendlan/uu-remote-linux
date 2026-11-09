@@ -39,15 +39,14 @@ jobs:
       - name: Detect latest upstream release
         id: detect
         run: |
-          # API 失败必须响亮报错：静默 skip 会让 fork 停在旧版本数天无人察觉。
-          # 注意不要写 `UP_TAG=$(curl ... || {...} | jq)`：| 优先于 ||，
-          # curl 成功时 jq 根本不执行，整个 JSON 会成为 UP_TAG。
-          RESP=$(curl -sf "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest") \
-            || { echo "::error::upstream releases API failed (rate-limited?)"; exit 1; }
-          UP_TAG=$(printf '%s' "$RESP" | jq -r '.tag_name // empty')
+          # 用 git refs 而不是 releases API 检测新版本：
+          # runner 出口 IP 是共享数据中心段，匿名 REST API 限额（60/h/IP）
+          # 几乎必然被打爆 —— 2026-11-04~09 就因此连着 6 天漏掉 9 个版本。
+          # 上一步已 `git fetch upstream main --tags --force`，直接从本地 refs 取最新 tag。
+          UP_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
           echo "up_tag=$UP_TAG" >> "$GITHUB_OUTPUT"
           # 已同步判定看提交是否已在 main 里，而不是 tag 是否存在——
-          # fork 上可能残留指向上游提交的同名 tag（fetch upstream --tags 曾推上去过）
+          # 本地可能有指向上游提交的同名 tag（fetch upstream --tags 带下来的）
           if [ -z "$UP_TAG" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "upstream has no releases"
