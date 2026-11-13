@@ -65,15 +65,21 @@ jobs:
             libwayland-dev libwayland-bin libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --release --locked
+      # Experimental viewer first: it recompiles this crate with a different feature set, and
+      # Cargo then drops the libuu-*.so the engine-plugin build had placed next to the binaries.
+      - run: cargo build --release --locked --features native-viewer,viewer-sdl --bin uuremote-viewer
       # One package for every desktop: Wayland (wlroots) and GNOME/KDE portal engines are plugins
       # opened at runtime (engine-plugins), so X11 hosts need none of their libraries.
-      - run: cargo build --release --locked --features wayland,portal,engine-plugins
+      - name: Engine plugins and host
+        run: |
+          # The plugins are a build-script side effect in target/release, so the script has to run
+          # even when the cached fingerprint says the crate itself is up to date.
+          touch build.rs
+          cargo build --release --locked --features wayland,portal,engine-plugins
       - uses: actions/download-artifact@v8
         with:
           name: libuu-portal-${{ matrix.arch }}
           path: target/release
-      # Experimental viewer; built after the host so uuremote-server keeps the release features.
-      - run: cargo build --release --locked --features native-viewer,viewer-sdl --bin uuremote-viewer
       - name: Package
         run: |
           name=uu-remote-linux-${GITHUB_REF_NAME}-${{ matrix.arch }}-linux
@@ -128,8 +134,11 @@ jobs:
               libglib2.0-dev libpipewire-0.3-dev libei-dev
             curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
             . "$HOME/.cargo/env"
-            cargo build --release --locked --features wayland,portal,engine-plugins
+            # Viewer first, engine plugins last: rebuilding this crate with another feature set
+            # makes Cargo delete the libuu-*.so the plugin build places next to the binaries.
             cargo build --release --locked --features native-viewer,viewer-sdl --bin uuremote-viewer
+            touch build.rs
+            cargo build --release --locked --features wayland,portal,engine-plugins
             # Bundle the libei runtime next to the plugin (see portal-plugin job).
             cp -L "$(dpkg -L libei1 | grep -E '/libei\.so\.1$')" target/release/libei.so.1
 

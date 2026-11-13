@@ -42,6 +42,10 @@ jobs:
       # the portal plugin is skipped with a warning (release builds it on 24.04).
       - name: Release feature set
         run: |
+          # The engine plugins are a build-script side effect written next to the binaries.
+          # rust-cache restores the build-script fingerprint but not target/debug/libuu-*.so,
+          # so Cargo would skip the script and the plugins would never be produced.
+          touch build.rs
           cargo build --locked --features wayland,portal,engine-plugins --bin uuremote-server
           test -f target/debug/libuu-wayland.so
       - name: Debian package installs
@@ -98,6 +102,9 @@ jobs:
       # Release layout: engines as runtime-loaded plugins; uuremote-server must not link them.
       - name: Engine plugins
         run: |
+          # See the note in the `test` job: force the build script to run so the plugins land
+          # next to the binaries even when rust-cache restores its fingerprint.
+          touch build.rs
           cargo build --locked --features wayland,portal,engine-plugins --bin uuremote-server
           for lib in libuu-wayland.so libuu-portal.so; do test -f "target/debug/$lib"; done
           ! readelf -d target/debug/uuremote-server | grep NEEDED | grep -E 'libei|libpipewire|libwayland-client|libxkbcommon'
@@ -159,5 +166,8 @@ jobs:
       # The aarch64 release package ships both engine plugins.
       - name: Release feature set
         run: |
+          # See the note in the `test` job: force the build script to run so the plugins land
+          # next to the binaries even when rust-cache restores its fingerprint.
+          touch build.rs
           cargo build --locked --features wayland,portal,engine-plugins --bin uuremote-server
           for lib in libuu-wayland.so libuu-portal.so; do test -f "target/debug/$lib"; done
