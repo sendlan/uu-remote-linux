@@ -173,15 +173,11 @@ fn shared_engine(name: &str, sources: &[&str], includes: &[&std::path::Path], cf
     command.args(cflags.split_whitespace()).args(sources).args(libs.split_whitespace()).arg("-lpthread");
     let status = command.status().expect("C compiler for the engine plugin");
     assert!(status.success(), "building {name} failed");
-    // Place it next to the binaries, where the release workflow packages it. Derive that
-    // directory from CARGO_TARGET_DIR/PROFILE instead of counting OUT_DIR's ancestors: the
-    // depth of target/<profile>/build/<package>-<hash>/out is Cargo's internal business and
-    // has changed across rustc releases, which silently dropped the plugin before.
-    let target_dir = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("target"));
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_owned());
-    let destination = target_dir.join(profile).join(name);
-    std::fs::copy(&library, &destination)
-        .unwrap_or_else(|error| panic!("copy {name} to {}: {error}", destination.display()));
-    println!("cargo:warning=engine plugin {name} -> {}", destination.display());
+    // OUT_DIR = target/<profile>/build/<package>-<hash>/out, or target/<profile>/build/<package>/<hash>/out with
+    // the newer Cargo build-dir layout (Rust 1.100 CI): the profile dir is the parent of the `build` component.
+    let profile = out.ancestors().find(|dir| dir.file_name().is_some_and(|n| n == "build")).and_then(|dir| dir.parent());
+    match profile {
+        Some(profile) => { std::fs::copy(&library, profile.join(name)).expect("copy engine plugin"); }
+        None => println!("cargo:warning={name} built in {} but no target/<profile> dir found to copy it to", out.display()),
+    }
 }
