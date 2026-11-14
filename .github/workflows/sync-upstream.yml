@@ -71,7 +71,10 @@ jobs:
             # 用 checkout <TAG> 而非 --theirs，可正确处理 modify/delete 冲突。
             CONFLICTS=$(git diff --name-only --diff-filter=U)
             echo "conflicted files: $CONFLICTS"
-            BAD=$(echo "$CONFLICTS" | grep -vE '^(Cargo\.toml|Cargo\.lock|docs/release-notes/|vendor/)' || true)
+            # build.rs：我们仅在 v0.2.58 临时修过 shared_engine 的插件拷贝，
+            # 上游 v0.2.59 已用更完善的写法取代（适配 Cargo 新 build-dir 布局），
+            # 冲突时一律取上游。
+            BAD=$(echo "$CONFLICTS" | grep -vE '^(Cargo\.toml|Cargo\.lock|docs/release-notes/|vendor/|build\.rs)' || true)
             if [ -n "$BAD" ]; then
               echo "::error::merge conflict beyond auto-resolvable files — manual resolution needed: $BAD"
               git merge --abort
