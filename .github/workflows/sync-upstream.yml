@@ -26,10 +26,12 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      # 用内置 GITHUB_TOKEN：workflow 已声明 contents: write，推 main/tag 均可；
+      # 2026-11-16 的失败证明 SYNC_TOKEN（personal token）被吊销会直接炸掉 checkout，
+      # 没有必要为它引入外部依赖。
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Fetch upstream tags
         run: |
