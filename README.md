@@ -145,7 +145,7 @@ niri 会话通过 `niri msg --json outputs` 枚举已启用的显示器。普通
 | 真彩（4:4:4） | 支持（v0.1.15）：NVENC / libx264 的默认 FFmpeg 管线输出 H.264 High 4:4:4；`inproc-av` 原生 NVENC 输出 H.264 High 4:4:4 / HEVC FRExt；VAAPI 管线仍为 4:2:0，并如实回报给客户端 |
 | HDR | 未实现 |
 | 超级屏 / 虚拟显示器 | 未实现 |
-| 被控端防窥模式 | 实验性：KDE Plasma Wayland（portal）支持隐私屏保和关屏，Mac 4.43.0 已验证不启用、隐私屏保、关闭显示屏三种状态回显；`UU_PRIVACY_AUTO=picture` / `screen-off` 可在桌面连接时自动开启。GNOME Wayland（portal）仅支持通过 Mutter 关屏，被本机或远程输入点亮时主机会再次关屏，完整远控尚未验收；见 [docs/privacy-screen.md](docs/privacy-screen.md) |
+| 被控端防窥模式 | 实验性：KDE Plasma Wayland（portal）支持隐私屏保和关屏，Mac 4.43.0 已验证不启用、隐私屏保、关闭显示屏三种状态回显；`UU_PRIVACY_AUTO=picture` / `screen-off` 可在桌面连接时自动开启。GNOME Wayland（portal）仅支持通过 Mutter 关屏，被本机或远程输入点亮时主机会再次关屏，完整远控尚未验收。主机会记住控制端上次的选择，设 `UU_PRIVACY_REMEMBER=1` 后才在下次桌面连接时自动套用；见 [docs/privacy-screen.md](docs/privacy-screen.md) |
 | 麦克风（控制端声音传到被控端） | 实验性：Opus → 虚拟麦克风，需 `UU_MICROPHONE=1`；支持 PulseAudio / PipeWire-pulse，见 [说明](docs/remote-microphone.md) |
 | 魔兽世界排队提醒等插件 | 不支持，会明确告诉客户端「无插件」 |
 | Linux 系统登录界面 | 还不支持控制开机后的系统登录界面（还没有人登录 Linux 桌面时）；这种情况可以用无头模式或虚拟桌面（见下文）。注意：这里说的是 Linux 系统登录，**不登录 UU 账号**现在可以通过「远程协助」使用 |
@@ -574,14 +574,18 @@ GNOME 与官方 Mac 被控端的双向剪贴板尚未验证通过；此修改不
   **布局**：字符按 **US QWERTY** 物理键位映射（非美式布局的符号/字母可能对不上）。
   **Windows 数字 PIN**：输满位数后系统常会自动提交，一般不必再发 `{Enter}`；若只想填入、不登录，用 `--omit-last N` 省略最后 N 个字符。
   日志与 `--dry-run` 输出只含长度/事件数，不含明文。复用会话时，发送约 1 秒后会保存一帧 PNG（默认写在 `$XDG_RUNTIME_DIR/uu-viewer-type/`，权限 0600），路径打在日志并打印 `snapshot=…`。
-- 桌面窗口中按 Ctrl+Alt+F 打开文件窗口（复用同一连接）。`UU_VIEWER_AUDIO=0` 关闭声音，`UU_VIEWER_CLIPBOARD=0` 关闭剪贴板，
+- 桌面窗口中按 Ctrl+Alt+F 打开文件窗口（复用同一连接）。Ctrl+Alt+M 打开控制中心，Ctrl+Alt+G 切换网络状态，Ctrl+Alt+K 切换向被控端发送系统快捷键（键盘捕获）。`UU_VIEWER_AUDIO=0` 关闭声音，`UU_VIEWER_CLIPBOARD=0` 关闭剪贴板，
   `UU_VIEWER_VIEW_ONLY=1` 只看不控，`UU_VIEWER_FFMPEG` 指定 ffmpeg 路径。
 - 桌面同时提供 H.264 / H.265，由主机协商选择；`UU_VIEWER_CODEC=h264` 将 SDP 和解码能力限制为 H.264。
   默认请求 4:2:0；`UU_VIEWER_CHROMA=444` 在 CONTROL 打开后请求真彩（4:4:4）。主机可能回落到 4:2:0，
   以 CaptureSettingSync 回报为准。两种色度均由 FFmpeg 转为 RGB24 显示。
 - 按被控端原始分辨率解码，窗口缩放使用线性过滤；被控端分辨率变化时自动重启解码器。`UU_VIEWER_SIZE=WxH` 可改为固定的留黑边画布。
+- 如果远控时触摸板自然滚动与本机方向相反，在远控窗口启用 **控制中心 → 外设 → 跟随本机自然滚动**。
+  普通鼠标滚轮方向保持不变；触摸板的纵向、横向及精细自然滚动立即生效。选择记在 `~/.config/uuremote/viewer.json` 的 `follow_natural_scroll` 中（默认 `false`），下次连接自动沿用。
 
 SDL 远程画面窗口关闭本地输入法的文本组合，按物理键转发；输入中文时请使用被控端的输入法及其中英切换键（例如 Shift）。
+
+控制中心按实际字体字号绘制，菜单正文默认 16 像素；中文字体也保持可读大小。需要进一步放大时，可用 `UU_VIEWER_UI_SCALE=1.5 uuremote-viewer ui`，同时放大菜单、控制按钮和点击区域。
 
 Mac 目标使用 macOS 原生键码，Windows / Linux 目标保留 Windows VK。键盘按物理键位置转发，不自动把 Ctrl 改成 Command；
 控制 Mac 时，PC 键盘的 Super / Win 键对应 Command。仅接受已验证的目标平台值 1（Windows / 本项目 Linux 主机）和 4（Mac），

@@ -164,7 +164,7 @@ On niri, `niri msg --json outputs` enumerates enabled monitors. Normal and 90/18
 | True color (4:4:4) | Supported (v0.1.15): the default FFmpeg pipeline with NVENC / libx264 encodes H.264 High 4:4:4; `inproc-av` native NVENC encodes H.264 High 4:4:4 / HEVC FRExt; VAAPI stays 4:2:0 and reports that to the client |
 | HDR | Not implemented |
 | Super screen / virtual display | Not implemented |
-| Privacy screen on the host | Experimental: KDE Plasma Wayland (portal) supports picture and screen-off, and Mac 4.43.0 was verified for the off, picture and screen-off labels; `UU_PRIVACY_AUTO=picture` / `screen-off` enables it automatically on desktop connect. GNOME Wayland (portal) supports Mutter screen-off only and turns the display off again after local or remote input wakes it; full remote-control behavior is unverified; see [docs/privacy-screen.md](docs/privacy-screen.md) |
+| Privacy screen on the host | Experimental: KDE Plasma Wayland (portal) supports picture and screen-off, and Mac 4.43.0 was verified for the off, picture and screen-off labels; `UU_PRIVACY_AUTO=picture` / `screen-off` enables it automatically on desktop connect. GNOME Wayland (portal) supports Mutter screen-off only and turns the display off again after local or remote input wakes it; full remote-control behavior is unverified. The host remembers the viewer's last mode and replays it on the next desktop connect only with `UU_PRIVACY_REMEMBER=1`; see [docs/privacy-screen.md](docs/privacy-screen.md) |
 | Microphone (viewer audio played on the host) | Experimental: Opus to a virtual input with `UU_MICROPHONE=1`; supports PulseAudio / PipeWire-pulse, see [notes](docs/remote-microphone.md) |
 | Plugins such as the WoW queue notifier | Not supported; the client is told that no plugins exist |
 | Linux login screen | The system login screen (before anyone logs in to the Linux desktop) cannot be controlled yet; use headless mode or a virtual desktop (see below). This is about the Linux login: **without a UU account** the host can now be used through remote assistance |
@@ -624,6 +624,11 @@ terminal emulator (`TERMINAL` selects one). From source: `sudo apt install libsd
 
 Key combinations use the left/right modifier state attached to each SDL key event. Focus loss releases remote keys; after focus returns, the next non-modifier key restores any still-held Shift/Ctrl/Alt/Win (Command on Mac). This is built in, with no adapter or setting required.
 
+Control-center text uses actual font em sizes, with 16 px menu labels so CJK fonts remain readable. To enlarge the controls further, launch with `UU_VIEWER_UI_SCALE=1.5 uuremote-viewer ui`; menu geometry and hit targets scale together.
+
+If touchpad natural scrolling feels reversed remotely, enable **Control center → Peripherals → Follow local natural scrolling** in the remote window.
+Normal mouse wheel direction stays unchanged; the option takes effect immediately for both axes and precise natural scrolling. The `follow_natural_scroll` preference is saved in `~/.config/uuremote/viewer.json` (default `false`) and restored on the next connection.
+
 The viewer mirrors remote PNG pointer shapes (including text and window-resize cursors) with their hotspots. Leaving the remote picture or opening local controls restores the local arrow.
 
 SDL clipboard access reuses the desktop window to avoid temporary-window Dock churn on GNOME Wayland (#37).
@@ -654,7 +659,7 @@ GNOME-to-official-Mac bidirectional clipboard synchronization is still unverifie
   **Layout**: characters are mapped for **US QWERTY** only (non-US layouts may mistype symbols/letters).
   **Windows numeric PIN**: Windows often submits automatically once enough digits are entered — usually no `{Enter}` needed. Use `--omit-last N` to omit the last N characters when you want to fill without signing in.
   Logs and `--dry-run` report lengths/event counts only. When reusing a session, about one second after sending, a PNG frame is saved (default under `$XDG_RUNTIME_DIR/uu-viewer-type/`, mode 0600); the path is logged and printed as `snapshot=…`.
-- Ctrl+Alt+F in the desktop window opens the files window on the same connection. `UU_VIEWER_AUDIO=0` disables sound,
+- In the desktop window: Ctrl+Alt+F opens the files window on the same connection, Ctrl+Alt+M toggles the control center, Ctrl+Alt+G toggles the network-status HUD, and Ctrl+Alt+K toggles sending system shortcuts to the remote host (keyboard grab). `UU_VIEWER_AUDIO=0` disables sound,
   `UU_VIEWER_CLIPBOARD=0` the clipboard, `UU_VIEWER_VIEW_ONLY=1` input; `UU_VIEWER_FFMPEG` selects the ffmpeg binary.
 - Desktop offers H.264 / H.265; the host chooses the codec. `UU_VIEWER_CODEC=h264` limits both SDP and decoder capabilities to H.264.
   The default request stays 4:2:0; `UU_VIEWER_CHROMA=444` requests true color (4:4:4) after CONTROL opens. The host may fall back to
