@@ -163,10 +163,16 @@ jobs:
         if: steps.detect.outputs.skip == 'false'
         run: |
           TAG="${{ steps.detect.outputs.up_tag }}"
-          git push origin main
-          # fetch upstream 时同名 tag 已在本地（指向上游提交），强制重打到我们的合并提交
-          git tag -f "$TAG"
-          git push -f origin "$TAG"
+          # 2026-11-19 的失败证明推送会遇到瞬时故障（本地用同样内容重推即成功），
+          # 整个 job 到这一步已经白跑 20 分钟，失败重试成本远低于整体重跑。
+          for i in 1 2 3 4 5; do
+            if git push origin main && git tag -f "$TAG" && git push -f origin "$TAG"; then
+              echo "pushed main + $TAG (attempt $i)"; exit 0
+            fi
+            echo "::warning::push attempt $i failed, retrying in 20s"; sleep 20
+          done
+          echo "::error::push failed after 5 attempts"
+          exit 1
 
       # GITHUB_TOKEN 触发的 push/tag 事件不会触发其他 workflow（防递归），
       # 但 workflow_dispatch 是豁免事件 —— 直接 dispatch Release 构建新 tag。
